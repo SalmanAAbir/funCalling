@@ -4,8 +4,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { FaceFilterPipeline } from "@/lib/face-filter";
 import { PeerRoom, type PeerUser } from "@/lib/peer-room";
-import type { FilterId } from "@/lib/filters";
+import { FILTERS, type FilterId } from "@/lib/filters";
 import { VideoTile } from "./VideoTile";
+import { DraggablePip } from "./DraggablePip";
 import { ControlBar } from "./ControlBar";
 import { FilterPicker } from "./FilterPicker";
 import { cn } from "@/lib/utils";
@@ -31,34 +32,35 @@ export function RoomClient({ roomId, initialName }: RoomClientProps) {
   const pipelineRef = useRef<FaceFilterPipeline | null>(null);
   const roomRef = useRef<PeerRoom | null>(null);
   const rawStreamRef = useRef<MediaStream | null>(null);
+  const filterRef = useRef<FilterId>(filter);
+  filterRef.current = filter;
 
   const displayName = useMemo(
     () => initialName.trim() || "Guest",
     [initialName],
   );
 
-  const tiles = useMemo(() => {
-    if (peers.length > 0) return peers;
-    return [
-      {
-        peerId: "local-preview",
-        name: displayName,
-        filter,
-        stream: localPreview ?? undefined,
-        isLocal: true,
-      } satisfies PeerUser,
-    ];
-  }, [peers, displayName, filter, localPreview]);
+  const localPeer = useMemo(
+    () => peers.find((p) => p.isLocal),
+    [peers],
+  );
 
-  const count = tiles.length;
+  const remotePeers = useMemo(
+    () => peers.filter((p) => !p.isLocal),
+    [peers],
+  );
 
-  const gridClass = useMemo(() => {
-    if (count <= 1) return "grid-cols-1 grid-rows-1";
-    if (count === 2)
+  const localStream = localPeer?.stream ?? localPreview ?? undefined;
+  const hasRemotes = remotePeers.length > 0;
+
+  const remoteGrid = useMemo(() => {
+    const n = remotePeers.length;
+    if (n <= 1) return "grid-cols-1 grid-rows-1";
+    if (n === 2)
       return "grid-cols-1 grid-rows-2 md:grid-cols-2 md:grid-rows-1";
-    if (count <= 4) return "grid-cols-2 grid-rows-2";
-    return "grid-cols-2 grid-rows-3 md:grid-cols-3 md:grid-rows-2";
-  }, [count]);
+    if (n <= 4) return "grid-cols-2 grid-rows-2";
+    return "grid-cols-2 grid-rows-3 md:grid-cols-3";
+  }, [remotePeers.length]);
 
   const cleanup = useCallback(() => {
     roomRef.current?.leave();
@@ -102,7 +104,11 @@ export function RoomClient({ roomId, initialName }: RoomClientProps) {
         }
         pipelineRef.current = pipeline;
         pipeline.setFilter("none");
-        const outgoing = pipeline.start(raw);
+        const outgoing = await pipeline.start(raw);
+        if (cancelled) {
+          outgoing.getTracks().forEach((t) => t.stop());
+          return;
+        }
         setLocalPreview(outgoing);
 
         setStatus("Connecting…");
@@ -133,11 +139,37 @@ export function RoomClient({ roomId, initialName }: RoomClientProps) {
     };
   }, [cleanup, displayName, roomId]);
 
-  function applyFilter(next: FilterId) {
+  const applyFilter = useCallback((next: FilterId) => {
     setFilter(next);
     pipelineRef.current?.setFilter(next);
     roomRef.current?.setFilter(next);
-  }
+  }, []);
+
+  const shiftFilter = useCallback(
+    (delta: number) => {
+      const index = FILTERS.findIndex((f) => f.id === filterRef.current);
+      const current = index < 0 ? 0 : index;
+      const next =
+        FILTERS[(current + delta + FILTERS.length) % FILTERS.length];
+      applyFilter(next.id);
+      setFiltersOpen(true);
+    },
+    [applyFilter],
+  );
+
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "ArrowLeft") {
+        e.preventDefault();
+        shiftFilter(-1);
+      } else if (e.key === "ArrowRight") {
+        e.preventDefault();
+        shiftFilter(1);
+      }
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [shiftFilter]);
 
   function toggleAudio() {
     const next = !audioEnabled;
@@ -189,29 +221,44 @@ export function RoomClient({ roomId, initialName }: RoomClientProps) {
         </div>
       )}
 
-      <div
-        className={cn(
-          "absolute inset-0 grid h-full w-full min-h-0 min-w-0 gap-px bg-black",
-          gridClass,
-        )}
-      >
-        {tiles.map((peer, index) => (
+      {/* Main stage: remotes full-bleed, or local full-screen when alone */}
+      <div className="absolute inset-0">
+        {hasRemotes ? (
+          <div className={cn("grid h-full w-full gap-px bg-black", remoteGrid)}>
+            {remotePeers.map((peer) => (
+              <VideoTile
+                key={peer.peerId}
+                stream={peer.stream}
+                name={peer.name}
+                filter={peer.filter}
+                className="min-h-0 min-w-0"
+              />
+            ))}
+          </div>
+        ) : (
           <VideoTile
-            key={peer.peerId}
-            stream={peer.stream}
-            name={peer.name}
-            filter={peer.isLocal ? filter : peer.filter}
-            isLocal={peer.isLocal}
-            mirrored={Boolean(peer.isLocal)}
-            audioEnabled={peer.isLocal ? audioEnabled : true}
-            videoEnabled={peer.isLocal ? videoEnabled : true}
-            className={cn(
-              "min-h-0 min-w-0",
-              count === 3 && index === 0 && "col-span-2 md:col-span-1",
-            )}
+            stream={localStream}
+            name={displayName}
+            filter={filter}
+            isLocal
+            mirrored
+            audioEnabled={audioEnabled}
+            videoEnabled={videoEnabled}
+            className="h-full w-full"
           />
-        ))}
+        )}
       </div>
+
+      {/* Messenger-style floating self view when others are in the call */}
+      {hasRemotes && (
+        <DraggablePip
+          stream={localStream}
+          name={displayName}
+          filter={filter}
+          audioEnabled={audioEnabled}
+          videoEnabled={videoEnabled}
+        />
+      )}
 
       {!localPreview && !error && (
         <div className="absolute inset-0 z-10 flex items-center justify-center bg-black/80">

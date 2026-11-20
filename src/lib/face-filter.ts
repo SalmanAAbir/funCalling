@@ -13,6 +13,23 @@ const MODEL_URL =
 const WASM_URL =
   "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.2.3/wasm";
 
+function waitForVideoSize(video: HTMLVideoElement): Promise<void> {
+  if (video.videoWidth > 0 && video.videoHeight > 0) return Promise.resolve();
+  return new Promise((resolve) => {
+    const done = () => {
+      if (video.videoWidth > 0 && video.videoHeight > 0) {
+        video.removeEventListener("loadedmetadata", done);
+        video.removeEventListener("resize", done);
+        resolve();
+      }
+    };
+    video.addEventListener("loadedmetadata", done);
+    video.addEventListener("resize", done);
+    // Fallback if events already fired
+    requestAnimationFrame(done);
+  });
+}
+
 export class FaceFilterPipeline {
   private landmarker: FaceLandmarker | null = null;
   private video: HTMLVideoElement;
@@ -65,15 +82,16 @@ export class FaceFilterPipeline {
     return this.filter;
   }
 
-  start(cameraStream: MediaStream): MediaStream {
+  async start(cameraStream: MediaStream): Promise<MediaStream> {
     this.stopLoop();
     this.video.srcObject = cameraStream;
-    void this.video.play();
+    this.video.muted = true;
+    this.video.playsInline = true;
+    await this.video.play();
+    await waitForVideoSize(this.video);
 
-    const track = cameraStream.getVideoTracks()[0];
-    const settings = track?.getSettings();
-    this.canvas.width = settings?.width || 640;
-    this.canvas.height = settings?.height || 480;
+    // Match canvas exactly to the camera frame — never stretch
+    this.syncCanvasSize();
 
     this.running = true;
     this.loop();
@@ -90,24 +108,32 @@ export class FaceFilterPipeline {
     return this.outputStream;
   }
 
+  private syncCanvasSize() {
+    const { video, canvas } = this;
+    const w = video.videoWidth;
+    const h = video.videoHeight;
+    if (!w || !h) return;
+    if (canvas.width !== w || canvas.height !== h) {
+      canvas.width = w;
+      canvas.height = h;
+    }
+  }
+
   private loop = () => {
     if (!this.running) return;
     this.raf = requestAnimationFrame(this.loop);
 
     const { video, canvas, ctx } = this;
-    if (video.readyState < 2) return;
+    if (video.readyState < 2 || !video.videoWidth) return;
 
-    if (canvas.width !== video.videoWidth && video.videoWidth) {
-      canvas.width = video.videoWidth;
-      canvas.height = video.videoHeight;
-    }
+    this.syncCanvasSize();
 
+    // 1:1 copy — same aspect as the camera
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
     if (!this.landmarker || this.filter === "none") return;
 
     const now = performance.now();
-    // Detect ~30fps; render every frame from smoothed pose
     if (now - this.lastDetect >= 32) {
       this.lastDetect = now;
       const result = this.landmarker.detectForVideo(video, now);
