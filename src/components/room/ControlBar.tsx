@@ -23,7 +23,6 @@ type ControlBarProps = {
   onToggleFilters: () => void;
   onLeave: () => void;
   roomId: string;
-  hidden?: boolean;
 };
 
 export function ControlBar({
@@ -35,7 +34,6 @@ export function ControlBar({
   onToggleFilters,
   onLeave,
   roomId,
-  hidden,
 }: ControlBarProps) {
   const [copied, setCopied] = useState(false);
 
@@ -45,8 +43,6 @@ export function ControlBar({
     setCopied(true);
     setTimeout(() => setCopied(false), 1600);
   }
-
-  if (hidden) return null;
 
   return (
     <div className="pointer-events-none absolute inset-x-0 bottom-0 z-20 flex justify-center px-3 pb-[max(1rem,env(safe-area-inset-bottom))] pt-4">

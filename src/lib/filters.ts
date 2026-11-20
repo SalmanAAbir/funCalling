@@ -1,87 +1,48 @@
 export type FilterId = string;
 
-export type FilterCategory =
-  | "animals"
-  | "creatures"
-  | "accessories"
-  | "mood"
-  | "fx";
-
 export type FilterOption = {
   id: FilterId;
   label: string;
+  /** Preview glyph shown in the Messenger-style tray */
   emoji: string;
-  description: string;
-  category: FilterCategory;
+  /** Soft pastel used for the circular tray icon background */
+  swatch: string;
 };
 
+/** Classic Messenger / Meta camera-style face effects */
 export const FILTERS: FilterOption[] = [
-  { id: "none", label: "None", emoji: "🙂", description: "Clean cam", category: "fx" },
-
-  // Animals
-  { id: "cat", label: "Cat", emoji: "🐱", description: "Classic cat ears", category: "animals" },
-  { id: "dog", label: "Puppy", emoji: "🐶", description: "Floppy puppy", category: "animals" },
-  { id: "bunny", label: "Bunny", emoji: "🐰", description: "Tall bunny ears", category: "animals" },
-  { id: "mouse", label: "Mouse", emoji: "🐭", description: "Tiny whiskers", category: "animals" },
-  { id: "bear", label: "Bear", emoji: "🐻", description: "Round bear ears", category: "animals" },
-  { id: "fox", label: "Fox", emoji: "🦊", description: "Pointy fox ears", category: "animals" },
-  { id: "panda", label: "Panda", emoji: "🐼", description: "Panda eyes", category: "animals" },
-  { id: "frog", label: "Frog", emoji: "🐸", description: "Big frog eyes", category: "animals" },
-  { id: "pig", label: "Piggy", emoji: "🐷", description: "Snout + ears", category: "animals" },
-  { id: "chick", label: "Chick", emoji: "🐤", description: "Fluffy chick", category: "animals" },
-  { id: "koala", label: "Koala", emoji: "🐨", description: "Fuzzy ears", category: "animals" },
-  { id: "tiger", label: "Tiger", emoji: "🐯", description: "Tiger stripes", category: "animals" },
-  { id: "lion", label: "Lion", emoji: "🦁", description: "Mane vibes", category: "animals" },
-  { id: "cow", label: "Cow", emoji: "🐮", description: "Spots + horns", category: "animals" },
-
-  // Creatures
-  { id: "unicorn", label: "Unicorn", emoji: "🦄", description: "Magic horn", category: "creatures" },
-  { id: "dragon", label: "Dragon", emoji: "🐲", description: "Dragon horns", category: "creatures" },
-  { id: "alien", label: "Alien", emoji: "👽", description: "Out of this world", category: "creatures" },
-  { id: "ghost", label: "Ghost", emoji: "👻", description: "Spooky soft glow", category: "creatures" },
-  { id: "robot", label: "Robot", emoji: "🤖", description: "Chrome faceplate", category: "creatures" },
-  { id: "devil", label: "Devil", emoji: "😈", description: "Little horns", category: "creatures" },
-  { id: "angel", label: "Angel", emoji: "😇", description: "Halo glow", category: "creatures" },
-  { id: "clown", label: "Clown", emoji: "🤡", description: "Circus mode", category: "creatures" },
-  { id: "vampire", label: "Vampire", emoji: "🧛", description: "Fang night", category: "creatures" },
-  { id: "zombie", label: "Zombie", emoji: "🧟", description: "Undead tint", category: "creatures" },
-  { id: "witch", label: "Witch", emoji: "🧙", description: "Spellcaster", category: "creatures" },
-  { id: "pirate", label: "Pirate", emoji: "🏴‍☠️", description: "Eye patch vibes", category: "creatures" },
-
-  // Accessories
-  { id: "shades", label: "Shades", emoji: "🕶️", description: "Cool shades", category: "accessories" },
-  { id: "hearts", label: "Hearts", emoji: "😍", description: "Heart eyes", category: "accessories" },
-  { id: "starry", label: "Stars", emoji: "🤩", description: "Star eyes", category: "accessories" },
-  { id: "mustache", label: "Stache", emoji: "🥸", description: "Fancy mustache", category: "accessories" },
-  { id: "crown", label: "Crown", emoji: "👑", description: "Royalty", category: "accessories" },
-  { id: "flower", label: "Flower", emoji: "🌸", description: "Flower crown", category: "accessories" },
-  { id: "party", label: "Party", emoji: "🥳", description: "Party hat", category: "accessories" },
-  { id: "mask", label: "Mask", emoji: "🎭", description: "Mystery mask", category: "accessories" },
-  { id: "glasses", label: "Nerd", emoji: "🤓", description: "Round glasses", category: "accessories" },
-  { id: "mono", label: "Mono", emoji: "🧐", description: "Monocle", category: "accessories" },
-
-  // Mood + FX
-  { id: "blush", label: "Blush", emoji: "😊", description: "Soft blush", category: "mood" },
-  { id: "tears", label: "Tears", emoji: "😭", description: "Happy tears", category: "mood" },
-  { id: "fire", label: "Fire", emoji: "🔥", description: "On fire", category: "fx" },
-  { id: "ice", label: "Ice", emoji: "❄️", description: "Frozen glow", category: "fx" },
-  { id: "neon", label: "Neon", emoji: "💚", description: "Neon outline", category: "fx" },
-  { id: "rainbow", label: "Rainbow", emoji: "🌈", description: "Pride glow", category: "fx" },
-  { id: "sparkle", label: "Sparkle", emoji: "✨", description: "Glitter rain", category: "fx" },
-  { id: "comic", label: "Comic", emoji: "💥", description: "Pop-art dots", category: "fx" },
-  { id: "noir", label: "Noir", emoji: "🎬", description: "B&W drama", category: "fx" },
-  { id: "vintage", label: "Retro", emoji: "📷", description: "Warm vintage", category: "fx" },
-  { id: "cyber", label: "Cyber", emoji: "💠", description: "HUD cyber lines", category: "fx" },
-  { id: "pixel", label: "Pixel", emoji: "👾", description: "Pixel face", category: "fx" },
-];
-
-export const FILTER_CATEGORIES: { id: FilterCategory | "all"; label: string }[] = [
-  { id: "all", label: "All" },
-  { id: "animals", label: "Animals" },
-  { id: "creatures", label: "Creatures" },
-  { id: "accessories", label: "Looks" },
-  { id: "mood", label: "Mood" },
-  { id: "fx", label: "FX" },
+  { id: "none", label: "Original", emoji: "🚫", swatch: "#3f3f46" },
+  { id: "dog", label: "Dog", emoji: "🐶", swatch: "#b45309" },
+  { id: "cat", label: "Cat", emoji: "🐱", swatch: "#ea580c" },
+  { id: "bunny", label: "Bunny", emoji: "🐰", swatch: "#f472b6" },
+  { id: "bear", label: "Bear", emoji: "🐻", swatch: "#92400e" },
+  { id: "deer", label: "Deer", emoji: "🦌", swatch: "#a16207" },
+  { id: "pig", label: "Pig", emoji: "🐷", swatch: "#fb7185" },
+  { id: "mouse", label: "Mouse", emoji: "🐭", swatch: "#a8a29e" },
+  { id: "panda", label: "Panda", emoji: "🐼", swatch: "#52525b" },
+  { id: "fox", label: "Fox", emoji: "🦊", swatch: "#ea580c" },
+  { id: "raccoon", label: "Raccoon", emoji: "🦝", swatch: "#78716c" },
+  { id: "chick", label: "Chick", emoji: "🐤", swatch: "#facc15" },
+  { id: "frog", label: "Frog", emoji: "🐸", swatch: "#22c55e" },
+  { id: "unicorn", label: "Unicorn", emoji: "🦄", swatch: "#c084fc" },
+  { id: "flower", label: "Flower", emoji: "🌸", swatch: "#f9a8d4" },
+  { id: "hearts", label: "Hearts", emoji: "😍", swatch: "#e11d48" },
+  { id: "stars", label: "Stars", emoji: "🤩", swatch: "#eab308" },
+  { id: "blush", label: "Blush", emoji: "😊", swatch: "#fda4af" },
+  { id: "freckles", label: "Freckles", emoji: "☺️", swatch: "#fdba74" },
+  { id: "glow", label: "Glow", emoji: "✨", swatch: "#fde68a" },
+  { id: "shades", label: "Shades", emoji: "🕶️", swatch: "#1e293b" },
+  { id: "bigeyes", label: "Big Eyes", emoji: "👀", swatch: "#38bdf8" },
+  { id: "mustache", label: "Mustache", emoji: "🥸", swatch: "#78716c" },
+  { id: "crown", label: "Crown", emoji: "👑", swatch: "#fbbf24" },
+  { id: "halo", label: "Halo", emoji: "😇", swatch: "#fef08a" },
+  { id: "devil", label: "Devil", emoji: "😈", swatch: "#dc2626" },
+  { id: "ghost", label: "Ghost", emoji: "👻", swatch: "#e2e8f0" },
+  { id: "sparkle", label: "Sparkle", emoji: "💖", swatch: "#f472b6" },
+  { id: "rainbow", label: "Rainbow", emoji: "🌈", swatch: "#818cf8" },
+  { id: "snow", label: "Snow", emoji: "❄️", swatch: "#7dd3fc" },
+  { id: "warm", label: "Warm", emoji: "🌅", swatch: "#fb923c" },
+  { id: "cool", label: "Cool", emoji: "🧊", swatch: "#22d3ee" },
 ];
 
 export function isFilterId(value: string): value is FilterId {

@@ -1,10 +1,12 @@
 import {
   FaceLandmarker,
   FilesetResolver,
+  type Category,
   type NormalizedLandmark,
 } from "@mediapipe/tasks-vision";
 import type { FilterId } from "./filters";
 import { renderFilter } from "./filter-renderer";
+import { FaceTracker } from "./face-track";
 
 const MODEL_URL =
   "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task";
@@ -19,8 +21,10 @@ export class FaceFilterPipeline {
   private raf = 0;
   private running = false;
   private filter: FilterId = "none";
+  private tracker = new FaceTracker();
+  private lastLandmarks: NormalizedLandmark[] | null = null;
+  private lastBlends: Category[] | undefined;
   private lastDetect = 0;
-  private lastFace: NormalizedLandmark[] | null = null;
   private outputStream: MediaStream | null = null;
 
   constructor(video: HTMLVideoElement, canvas: HTMLCanvasElement) {
@@ -36,6 +40,8 @@ export class FaceFilterPipeline {
     const options = {
       runningMode: "VIDEO" as const,
       numFaces: 1,
+      outputFaceBlendshapes: true,
+      outputFacialTransformationMatrixes: true,
     };
     try {
       this.landmarker = await FaceLandmarker.createFromOptions(vision, {
@@ -52,6 +58,7 @@ export class FaceFilterPipeline {
 
   setFilter(filter: FilterId) {
     this.filter = filter;
+    if (filter === "none") this.tracker.reset();
   }
 
   getFilter() {
@@ -97,23 +104,26 @@ export class FaceFilterPipeline {
 
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
-    if (this.landmarker && this.filter !== "none") {
-      const now = performance.now();
-      if (now - this.lastDetect > 33) {
-        this.lastDetect = now;
-        const result = this.landmarker.detectForVideo(video, now);
-        this.lastFace = result.faceLandmarks[0] ?? null;
-      }
-      if (this.lastFace) {
-        renderFilter(
-          ctx,
-          this.lastFace,
-          this.filter,
-          canvas.width,
-          canvas.height,
-          performance.now(),
-        );
-      }
+    if (!this.landmarker || this.filter === "none") return;
+
+    const now = performance.now();
+    // Detect ~30fps; render every frame from smoothed pose
+    if (now - this.lastDetect >= 32) {
+      this.lastDetect = now;
+      const result = this.landmarker.detectForVideo(video, now);
+      this.lastLandmarks = result.faceLandmarks[0] ?? null;
+      this.lastBlends = result.faceBlendshapes?.[0]?.categories;
+    }
+
+    const pose = this.tracker.update(
+      this.lastLandmarks,
+      canvas.width,
+      canvas.height,
+      this.lastBlends,
+    );
+
+    if (pose) {
+      renderFilter(ctx, pose, this.filter, canvas.width, canvas.height, now);
     }
   };
 
@@ -126,6 +136,7 @@ export class FaceFilterPipeline {
     this.stopLoop();
     this.landmarker?.close();
     this.landmarker = null;
+    this.tracker.reset();
     this.outputStream?.getTracks().forEach((t) => t.stop());
     this.outputStream = null;
   }

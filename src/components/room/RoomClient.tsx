@@ -223,7 +223,6 @@ export function RoomClient({ roomId, initialName }: RoomClientProps) {
         open={filtersOpen}
         value={filter}
         onChange={applyFilter}
-        onClose={() => setFiltersOpen(false)}
       />
 
       <ControlBar
@@ -231,7 +230,6 @@ export function RoomClient({ roomId, initialName }: RoomClientProps) {
         audioEnabled={audioEnabled}
         videoEnabled={videoEnabled}
         filtersOpen={filtersOpen}
-        hidden={filtersOpen}
         onToggleAudio={toggleAudio}
         onToggleVideo={toggleVideo}
         onToggleFilters={() => setFiltersOpen((v) => !v)}

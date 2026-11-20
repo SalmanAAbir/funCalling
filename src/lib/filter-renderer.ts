@@ -1,109 +1,62 @@
-import type { NormalizedLandmark } from "@mediapipe/tasks-vision";
+import type { FacePose, Point } from "./face-track";
+import { offsetAlong } from "./face-track";
 import type { FilterId } from "./filters";
 
-type Point = { x: number; y: number };
-
-type FaceGeom = {
-  leftEye: Point;
-  rightEye: Point;
-  nose: Point;
-  forehead: Point;
-  chin: Point;
-  leftTemple: Point;
-  rightTemple: Point;
-  mouth: Point;
-  eyeMid: Point;
-  faceW: number;
-  faceH: number;
-  angle: number;
-  center: Point;
-};
-
-function lm(
-  landmarks: NormalizedLandmark[],
-  index: number,
-  w: number,
-  h: number,
-): Point {
-  const p = landmarks[index];
-  return { x: p.x * w, y: p.y * h };
-}
-
-function dist(a: Point, b: Point) {
-  return Math.hypot(a.x - b.x, a.y - b.y);
-}
-
-function mid(a: Point, b: Point): Point {
-  return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
-}
-
-function geom(
-  landmarks: NormalizedLandmark[],
-  w: number,
-  h: number,
-): FaceGeom {
-  const leftEye = lm(landmarks, 33, w, h);
-  const rightEye = lm(landmarks, 263, w, h);
-  const nose = lm(landmarks, 1, w, h);
-  const forehead = lm(landmarks, 10, w, h);
-  const chin = lm(landmarks, 152, w, h);
-  const leftTemple = lm(landmarks, 234, w, h);
-  const rightTemple = lm(landmarks, 454, w, h);
-  const mouth = lm(landmarks, 13, w, h);
-  const eyeMid = mid(leftEye, rightEye);
-  return {
-    leftEye,
-    rightEye,
-    nose,
-    forehead,
-    chin,
-    leftTemple,
-    rightTemple,
-    mouth,
-    eyeMid,
-    faceW: dist(leftTemple, rightTemple),
-    faceH: dist(forehead, chin),
-    angle: Math.atan2(rightEye.y - leftEye.y, rightEye.x - leftEye.x),
-    center: mid(eyeMid, chin),
-  };
-}
-
-function sticker(
+function emoji(
   ctx: CanvasRenderingContext2D,
-  emoji: string,
+  text: string,
   x: number,
   y: number,
   size: number,
   angle = 0,
-  mirrorX = false,
+  flip = false,
 ) {
   ctx.save();
   ctx.translate(x, y);
   ctx.rotate(angle);
-  if (mirrorX) ctx.scale(-1, 1);
+  if (flip) ctx.scale(-1, 1);
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
-  ctx.font = `${Math.max(12, size)}px "Apple Color Emoji","Segoe UI Emoji","Noto Color Emoji",sans-serif`;
-  ctx.fillText(emoji, 0, 0);
+  ctx.font = `${Math.max(10, size)}px "Apple Color Emoji","Segoe UI Emoji","Noto Color Emoji",sans-serif`;
+  ctx.fillText(text, 0, 0);
   ctx.restore();
 }
 
-function tintFace(
+/** Draw a prop locked to head pose — scales with faceW, rotates with roll */
+function headProp(
   ctx: CanvasRenderingContext2D,
-  g: FaceGeom,
-  color: string,
-  alpha: number,
+  f: FacePose,
+  glyph: string,
+  opts: {
+    /** Multiplier of faceW for emoji font size */
+    size?: number;
+    /** Extra lift along head-up from headTop (fraction of faceH) */
+    lift?: number;
+    /** Shift along head-right (fraction of faceW) */
+    side?: number;
+  } = {},
 ) {
+  const sizeMul = opts.size ?? 0.9;
+  const lift = (opts.lift ?? 0) * f.faceH;
+  const side = (opts.side ?? 0) * f.faceW;
+  const pos = {
+    x: f.headTop.x + f.up.x * lift + f.right.x * side,
+    y: f.headTop.y + f.up.y * lift + f.right.y * side,
+  };
+  emoji(ctx, glyph, pos.x, pos.y, f.faceW * sizeMul, f.roll);
+}
+
+function tint(ctx: CanvasRenderingContext2D, f: FacePose, color: string, a: number) {
   ctx.save();
-  ctx.globalAlpha = alpha;
+  ctx.globalAlpha = a;
   ctx.fillStyle = color;
   ctx.beginPath();
   ctx.ellipse(
-    g.center.x,
-    g.center.y,
-    g.faceW * 0.58,
-    g.faceH * 0.68,
-    g.angle,
+    f.center.x,
+    f.center.y,
+    f.faceW * 0.58,
+    f.faceH * 0.68,
+    f.roll,
     0,
     Math.PI * 2,
   );
@@ -114,194 +67,393 @@ function tintFace(
 const gradeCanvas =
   typeof document !== "undefined" ? document.createElement("canvas") : null;
 
-function colorGrade(
+function grade(
   ctx: CanvasRenderingContext2D,
   w: number,
   h: number,
-  cssFilter: string,
+  css: string,
 ) {
   if (!gradeCanvas) return;
   if (gradeCanvas.width !== w || gradeCanvas.height !== h) {
     gradeCanvas.width = w;
     gradeCanvas.height = h;
   }
-  const gctx = gradeCanvas.getContext("2d");
-  if (!gctx) return;
-  gctx.clearRect(0, 0, w, h);
-  gctx.filter = cssFilter;
-  gctx.drawImage(ctx.canvas, 0, 0, w, h);
-  gctx.filter = "none";
+  const g = gradeCanvas.getContext("2d");
+  if (!g) return;
+  g.clearRect(0, 0, w, h);
+  g.filter = css;
+  g.drawImage(ctx.canvas, 0, 0);
+  g.filter = "none";
   ctx.clearRect(0, 0, w, h);
   ctx.drawImage(gradeCanvas, 0, 0);
 }
 
-function earPair(
+function drawEar(
   ctx: CanvasRenderingContext2D,
-  g: FaceGeom,
-  emoji: string,
-  sizeMul = 0.42,
-  lift = 0.12,
-  spread = 0.08,
+  base: Point,
+  tip: Point,
+  outer: string,
+  inner: string,
+  pointed: boolean,
 ) {
-  const size = g.faceW * sizeMul;
-  const ly = g.forehead.y - g.faceH * lift;
-  const ry = g.forehead.y - g.faceH * lift;
-  sticker(
-    ctx,
-    emoji,
-    g.leftTemple.x + g.faceW * spread,
-    ly,
-    size,
-    g.angle - 0.35,
+  const dx = tip.x - base.x;
+  const dy = tip.y - base.y;
+  const len = Math.hypot(dx, dy);
+  const ang = Math.atan2(dy, dx);
+  const width = pointed ? len * 0.45 : len * 0.7;
+
+  ctx.save();
+  ctx.translate(base.x, base.y);
+  ctx.rotate(ang);
+  ctx.beginPath();
+  if (pointed) {
+    ctx.moveTo(0, -width * 0.15);
+    ctx.quadraticCurveTo(len * 0.45, -width, len, 0);
+    ctx.quadraticCurveTo(len * 0.45, width, 0, width * 0.15);
+  } else {
+    ctx.ellipse(len * 0.45, 0, len * 0.5, width * 0.55, 0, 0, Math.PI * 2);
+  }
+  ctx.closePath();
+  ctx.fillStyle = outer;
+  ctx.fill();
+
+  ctx.beginPath();
+  if (pointed) {
+    ctx.moveTo(len * 0.12, 0);
+    ctx.quadraticCurveTo(len * 0.5, -width * 0.4, len * 0.85, 0);
+    ctx.quadraticCurveTo(len * 0.5, width * 0.4, len * 0.12, 0);
+  } else {
+    ctx.ellipse(len * 0.45, 0, len * 0.28, width * 0.28, 0, 0, Math.PI * 2);
+  }
+  ctx.closePath();
+  ctx.fillStyle = inner;
+  ctx.fill();
+  ctx.restore();
+}
+
+function animalEars(
+  ctx: CanvasRenderingContext2D,
+  f: FacePose,
+  outer: string,
+  inner: string,
+  opts: { pointed?: boolean; length?: number; spread?: number; flare?: number } = {},
+) {
+  const pointed = opts.pointed ?? true;
+  const length = (opts.length ?? 0.55) * f.faceH;
+  const spread = opts.spread ?? 0.08;
+  const flare = opts.flare ?? 1.05;
+
+  // Bases sit on upper temples; tips go along head-up ± outward
+  const leftBase = offsetAlong(
+    offsetAlong(f.forehead, f.right, -f.faceW * (0.28 + spread)),
+    f.up,
+    f.faceH * 0.02,
   );
-  sticker(
+  const rightBase = offsetAlong(
+    offsetAlong(f.forehead, f.right, f.faceW * (0.28 + spread)),
+    f.up,
+    f.faceH * 0.02,
+  );
+
+  const leftOut = {
+    x: f.up.x * length - f.right.x * length * flare * 0.35,
+    y: f.up.y * length - f.right.y * length * flare * 0.35,
+  };
+  const rightOut = {
+    x: f.up.x * length + f.right.x * length * flare * 0.35,
+    y: f.up.y * length + f.right.y * length * flare * 0.35,
+  };
+
+  drawEar(
     ctx,
-    emoji,
-    g.rightTemple.x - g.faceW * spread,
-    ry,
-    size,
-    g.angle + 0.35,
-    true,
+    leftBase,
+    { x: leftBase.x + leftOut.x, y: leftBase.y + leftOut.y },
+    outer,
+    inner,
+    pointed,
+  );
+  drawEar(
+    ctx,
+    rightBase,
+    { x: rightBase.x + rightOut.x, y: rightBase.y + rightOut.y },
+    outer,
+    inner,
+    pointed,
   );
 }
 
-function eyePair(
-  ctx: CanvasRenderingContext2D,
-  g: FaceGeom,
-  emoji: string,
-  sizeMul = 0.28,
-) {
-  const size = g.faceW * sizeMul;
-  sticker(ctx, emoji, g.leftEye.x, g.leftEye.y, size, g.angle);
-  sticker(ctx, emoji, g.rightEye.x, g.rightEye.y, size, g.angle);
+function whiskers(ctx: CanvasRenderingContext2D, f: FacePose, color = "rgba(30,30,30,0.75)") {
+  const reach = f.faceW * 0.4;
+  ctx.strokeStyle = color;
+  ctx.lineWidth = Math.max(1.5, f.faceW * 0.012);
+  ctx.lineCap = "round";
+  for (const oy of [-0.04, 0, 0.04]) {
+    const off = f.faceH * oy;
+    const a = offsetAlong(f.nose, f.up, off);
+    ctx.beginPath();
+    ctx.moveTo(a.x - f.right.x * f.faceW * 0.04, a.y - f.right.y * f.faceW * 0.04);
+    ctx.lineTo(a.x - f.right.x * reach, a.y - f.right.y * reach + off * 0.5);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(a.x + f.right.x * f.faceW * 0.04, a.y + f.right.y * f.faceW * 0.04);
+    ctx.lineTo(a.x + f.right.x * reach, a.y + f.right.y * reach + off * 0.5);
+    ctx.stroke();
+  }
 }
 
-function browHat(
-  ctx: CanvasRenderingContext2D,
-  g: FaceGeom,
-  emoji: string,
-  sizeMul = 0.55,
-  lift = 0.35,
-) {
-  sticker(
-    ctx,
-    emoji,
-    g.forehead.x,
-    g.forehead.y - g.faceH * lift,
-    g.faceW * sizeMul,
-    g.angle,
-  );
+function noseDot(ctx: CanvasRenderingContext2D, f: FacePose, color: string, r = 0.05) {
+  ctx.beginPath();
+  ctx.arc(f.nose.x, f.nose.y, f.faceW * r, 0, Math.PI * 2);
+  ctx.fillStyle = color;
+  ctx.fill();
 }
 
-function noseBit(
-  ctx: CanvasRenderingContext2D,
-  g: FaceGeom,
-  emoji: string,
-  sizeMul = 0.22,
-) {
-  sticker(ctx, emoji, g.nose.x, g.nose.y, g.faceW * sizeMul, g.angle);
+function snout(ctx: CanvasRenderingContext2D, f: FacePose, color: string) {
+  ctx.save();
+  ctx.translate(f.nose.x, f.nose.y);
+  ctx.rotate(f.roll);
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  ctx.ellipse(0, f.faceH * 0.02, f.faceW * 0.14, f.faceH * 0.1, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = "#1c1917";
+  ctx.beginPath();
+  ctx.ellipse(-f.faceW * 0.035, 0, f.faceW * 0.025, f.faceH * 0.035, 0, 0, Math.PI * 2);
+  ctx.ellipse(f.faceW * 0.035, 0, f.faceW * 0.025, f.faceH * 0.035, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
 }
 
-function sparklesAround(
+/** Messenger dog tongue — grows with jawOpen */
+function dogTongue(ctx: CanvasRenderingContext2D, f: FacePose) {
+  const open = Math.max(0, f.jawOpen - 0.15);
+  if (open < 0.05) return;
+  const length = f.faceH * (0.12 + open * 0.55);
+  const width = f.faceW * (0.1 + open * 0.06);
+  const mouth = midMouth(f);
+  ctx.save();
+  ctx.translate(mouth.x, mouth.y);
+  ctx.rotate(f.roll);
+  // Tongue hangs downward relative to head (opposite of up in local Y+)
+  const gradient = ctx.createLinearGradient(0, 0, 0, length);
+  gradient.addColorStop(0, "#fb7185");
+  gradient.addColorStop(1, "#e11d48");
+  ctx.fillStyle = gradient;
+  ctx.beginPath();
+  ctx.moveTo(-width * 0.5, 0);
+  ctx.quadraticCurveTo(-width * 0.7, length * 0.55, 0, length);
+  ctx.quadraticCurveTo(width * 0.7, length * 0.55, width * 0.5, 0);
+  ctx.closePath();
+  ctx.fill();
+  ctx.fillStyle = "rgba(255,255,255,0.35)";
+  ctx.beginPath();
+  ctx.ellipse(-width * 0.15, length * 0.35, width * 0.12, length * 0.18, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+}
+
+function midMouth(f: FacePose): Point {
+  return {
+    x: (f.mouthTop.x + f.mouthBottom.x) / 2,
+    y: (f.mouthTop.y + f.mouthBottom.y) / 2,
+  };
+}
+
+function antlers(ctx: CanvasRenderingContext2D, f: FacePose) {
+  ctx.save();
+  ctx.strokeStyle = "#92400e";
+  ctx.lineWidth = Math.max(2.5, f.faceW * 0.025);
+  ctx.lineCap = "round";
+  const drawSide = (side: 1 | -1) => {
+    const base = offsetAlong(f.forehead, f.right, side * f.faceW * 0.18);
+    const tip = offsetAlong(
+      offsetAlong(base, f.up, f.faceH * 0.45),
+      f.right,
+      side * f.faceW * 0.18,
+    );
+    const branch = offsetAlong(
+      offsetAlong(base, f.up, f.faceH * 0.22),
+      f.right,
+      side * f.faceW * 0.16,
+    );
+    ctx.beginPath();
+    ctx.moveTo(base.x, base.y);
+    ctx.quadraticCurveTo(
+      base.x + f.up.x * f.faceH * 0.25 + f.right.x * side * f.faceW * 0.05,
+      base.y + f.up.y * f.faceH * 0.25 + f.right.y * side * f.faceW * 0.05,
+      tip.x,
+      tip.y,
+    );
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(
+      base.x + f.up.x * f.faceH * 0.18,
+      base.y + f.up.y * f.faceH * 0.18,
+    );
+    ctx.lineTo(branch.x, branch.y);
+    ctx.stroke();
+  };
+  drawSide(-1);
+  drawSide(1);
+  ctx.restore();
+}
+
+function heart(ctx: CanvasRenderingContext2D, cx: number, cy: number, size: number, color: string) {
+  ctx.save();
+  ctx.translate(cx, cy);
+  ctx.beginPath();
+  ctx.moveTo(0, size * 0.3);
+  ctx.bezierCurveTo(-size, -size * 0.3, -size * 0.5, -size, 0, -size * 0.45);
+  ctx.bezierCurveTo(size * 0.5, -size, size, -size * 0.3, 0, size * 0.3);
+  ctx.closePath();
+  ctx.fillStyle = color;
+  ctx.fill();
+  ctx.restore();
+}
+
+function freckleDots(ctx: CanvasRenderingContext2D, f: FacePose) {
+  ctx.fillStyle = "rgba(180,83,9,0.55)";
+  const spots = [
+    [-0.22, 0.02],
+    [-0.16, 0.08],
+    [-0.28, 0.1],
+    [0.22, 0.02],
+    [0.16, 0.08],
+    [0.28, 0.1],
+    [-0.1, 0.14],
+    [0.1, 0.14],
+  ];
+  for (const [ox, oy] of spots) {
+    const p = offsetAlong(offsetAlong(f.nose, f.right, f.faceW * ox), f.up, -f.faceH * oy);
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, Math.max(1.5, f.faceW * 0.012), 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+
+function orbit(
   ctx: CanvasRenderingContext2D,
-  g: FaceGeom,
-  emoji: string,
+  f: FacePose,
+  glyph: string,
   count: number,
   t: number,
+  radiusMul = 0.58,
 ) {
   for (let i = 0; i < count; i++) {
     const a = (i / count) * Math.PI * 2 + t * 0.002;
-    const r = g.faceW * (0.55 + 0.12 * Math.sin(t * 0.004 + i));
-    sticker(
-      ctx,
-      emoji,
-      g.center.x + Math.cos(a) * r,
-      g.center.y + Math.sin(a) * r * 1.1,
-      g.faceW * 0.14,
-      a,
-    );
+    const r = f.faceW * (radiusMul + 0.08 * Math.sin(t * 0.004 + i));
+    const x = f.center.x + Math.cos(a) * r * f.right.x * 0 + Math.cos(a) * r;
+    const y = f.center.y + Math.sin(a) * r * 1.05;
+    // Bias orbit with head tilt so particles feel attached
+    const px = x + f.yaw * f.faceW * 0.05;
+    const py = y + f.pitch * f.faceH * 0.04;
+    emoji(ctx, glyph, px, py, f.faceW * 0.13, a);
   }
 }
 
-function cyberHud(ctx: CanvasRenderingContext2D, g: FaceGeom) {
-  ctx.save();
-  ctx.strokeStyle = "rgba(34,211,238,0.85)";
-  ctx.lineWidth = Math.max(1.5, g.faceW * 0.012);
-  ctx.setLineDash([6, 4]);
-  ctx.beginPath();
-  ctx.ellipse(
-    g.center.x,
-    g.center.y,
-    g.faceW * 0.62,
-    g.faceH * 0.72,
-    g.angle,
-    0,
-    Math.PI * 2,
-  );
-  ctx.stroke();
-  ctx.setLineDash([]);
-  ctx.fillStyle = "rgba(34,211,238,0.9)";
-  ctx.font = `${Math.max(10, g.faceW * 0.06)}px ui-monospace, monospace`;
-  ctx.fillText("TRK·OK", g.rightTemple.x + 8, g.forehead.y);
-  ctx.fillText(
-    `${Math.round(g.faceW)}px`,
-    g.leftTemple.x - g.faceW * 0.2,
-    g.chin.y,
-  );
-  ctx.restore();
-  eyePair(ctx, g, "💠", 0.18);
-}
-
-function pixelateFace(
+/** Hearts / sparkles burst from mouth when jaw opens */
+function mouthBurst(
   ctx: CanvasRenderingContext2D,
-  g: FaceGeom,
-  block = 12,
+  f: FacePose,
+  glyph: string,
+  timeMs: number,
 ) {
-  const x = Math.max(0, g.center.x - g.faceW * 0.55);
-  const y = Math.max(0, g.center.y - g.faceH * 0.65);
-  const w = g.faceW * 1.1;
-  const h = g.faceH * 1.25;
-  const sw = Math.max(4, Math.floor(w / block));
-  const sh = Math.max(4, Math.floor(h / block));
-  ctx.save();
-  ctx.imageSmoothingEnabled = false;
-  const tmp = document.createElement("canvas");
-  tmp.width = sw;
-  tmp.height = sh;
-  const tctx = tmp.getContext("2d");
-  if (!tctx) {
-    ctx.restore();
-    return;
+  const open = Math.max(0, f.jawOpen - 0.2);
+  if (open < 0.05) return;
+  const mouth = midMouth(f);
+  const n = 3 + Math.floor(open * 6);
+  for (let i = 0; i < n; i++) {
+    const spread = (i / Math.max(1, n - 1) - 0.5) * 1.2;
+    const distAmt = f.faceH * (0.15 + open * 0.55) * (0.6 + (i % 3) * 0.2);
+    const wobble = Math.sin(timeMs * 0.01 + i) * f.faceW * 0.03;
+    const p = {
+      x:
+        mouth.x -
+        f.up.x * distAmt +
+        f.right.x * (spread * f.faceW * 0.25 + wobble),
+      y:
+        mouth.y -
+        f.up.y * distAmt +
+        f.right.y * (spread * f.faceW * 0.25 + wobble),
+    };
+    emoji(ctx, glyph, p.x, p.y, f.faceW * (0.12 + open * 0.1), f.roll + spread);
   }
-  tctx.drawImage(ctx.canvas, x, y, w, h, 0, 0, sw, sh);
-  ctx.drawImage(tmp, 0, 0, sw, sh, x, y, w, h);
+}
+
+function flowerCrown(ctx: CanvasRenderingContext2D, f: FacePose) {
+  const flowers = ["🌸", "🌼", "🌺", "🌸", "💮", "🌼", "🌸"];
+  for (let i = 0; i < flowers.length; i++) {
+    const t = i / (flowers.length - 1);
+    const side = (t - 0.5) * f.faceW * 0.95;
+    const lift = f.faceH * (0.06 + 0.1 * Math.sin(t * Math.PI));
+    const p = offsetAlong(offsetAlong(f.headTop, f.right, side), f.up, -lift * 0.2);
+    emoji(ctx, flowers[i], p.x, p.y, f.faceW * 0.22, f.roll + (t - 0.5) * 0.5);
+  }
+}
+
+function drawnCrown(ctx: CanvasRenderingContext2D, f: FacePose) {
+  const w = f.faceW * 0.95;
+  const h = f.faceH * 0.4;
+  const band = h * 0.28;
+  const tips = 5;
+
+  ctx.save();
+  ctx.translate(f.headTop.x, f.headTop.y);
+  ctx.rotate(f.roll);
+
+  const grad = ctx.createLinearGradient(0, -h, 0, band);
+  grad.addColorStop(0, "#fde047");
+  grad.addColorStop(0.5, "#fbbf24");
+  grad.addColorStop(1, "#d97706");
+
+  ctx.fillStyle = grad;
+  ctx.strokeStyle = "#b45309";
+  ctx.lineWidth = Math.max(1.5, f.faceW * 0.01);
+
+  ctx.beginPath();
+  ctx.roundRect(-w / 2, -band * 0.15, w, band, band * 0.25);
+  ctx.fill();
+  ctx.stroke();
+
+  for (let i = 0; i < tips; i++) {
+    const x = -w / 2 + (w * i) / (tips - 1);
+    const peak = i % 2 === 0 ? -h * 0.95 : -h * 0.55;
+    const half = w / (tips - 1) / 2;
+    ctx.fillStyle = grad;
+    ctx.beginPath();
+    ctx.moveTo(x - half * 0.85, -band * 0.05);
+    ctx.lineTo(x, peak);
+    ctx.lineTo(x + half * 0.85, -band * 0.05);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+
+    ctx.beginPath();
+    ctx.arc(x, peak + h * 0.12, f.faceW * 0.025, 0, Math.PI * 2);
+    ctx.fillStyle = i % 2 === 0 ? "#ef4444" : "#3b82f6";
+    ctx.fill();
+  }
   ctx.restore();
 }
 
-function comicDots(ctx: CanvasRenderingContext2D, g: FaceGeom) {
+function halo(ctx: CanvasRenderingContext2D, f: FacePose) {
+  const c = offsetAlong(f.headTop, f.up, f.faceH * 0.08);
   ctx.save();
-  ctx.fillStyle = "rgba(0,0,0,0.35)";
-  const step = Math.max(6, g.faceW * 0.04);
-  const x0 = g.center.x - g.faceW * 0.55;
-  const y0 = g.center.y - g.faceH * 0.65;
-  const x1 = g.center.x + g.faceW * 0.55;
-  const y1 = g.center.y + g.faceH * 0.65;
-  for (let y = y0; y < y1; y += step) {
-    for (let x = x0; x < x1; x += step) {
-      const dx = (x - g.center.x) / (g.faceW * 0.55);
-      const dy = (y - g.center.y) / (g.faceH * 0.65);
-      if (dx * dx + dy * dy > 1) continue;
-      ctx.beginPath();
-      ctx.arc(x, y, step * 0.22, 0, Math.PI * 2);
-      ctx.fill();
-    }
-  }
+  ctx.translate(c.x, c.y);
+  ctx.rotate(f.roll);
+  ctx.strokeStyle = "#fde047";
+  ctx.shadowColor = "#facc15";
+  ctx.shadowBlur = 18;
+  ctx.lineWidth = Math.max(3, f.faceW * 0.028);
+  ctx.beginPath();
+  ctx.ellipse(0, 0, f.faceW * 0.32, f.faceH * 0.09, 0, 0, Math.PI * 2);
+  ctx.stroke();
   ctx.restore();
 }
 
 export function renderFilter(
   ctx: CanvasRenderingContext2D,
-  landmarks: NormalizedLandmark[],
+  f: FacePose,
   filter: FilterId,
   width: number,
   height: number,
@@ -309,227 +461,229 @@ export function renderFilter(
 ) {
   if (filter === "none") return;
 
-  const g = geom(landmarks, width, height);
-
   switch (filter) {
-    case "noir":
-      colorGrade(ctx, width, height, "grayscale(1) contrast(1.25)");
-      return;
-    case "vintage":
-      colorGrade(ctx, width, height, "sepia(0.55) contrast(1.1) saturate(1.2)");
-      tintFace(ctx, g, "#f59e0b", 0.08);
-      return;
-    case "ice":
-      colorGrade(ctx, width, height, "saturate(0.7) brightness(1.08) hue-rotate(180deg)");
-      tintFace(ctx, g, "#67e8f9", 0.18);
-      sparklesAround(ctx, g, "❄️", 8, timeMs);
-      return;
-    case "neon":
-      tintFace(ctx, g, "#22c55e", 0.12);
-      ctx.save();
-      ctx.strokeStyle = "rgba(74,222,128,0.95)";
-      ctx.shadowColor = "#4ade80";
-      ctx.shadowBlur = 18;
-      ctx.lineWidth = Math.max(3, g.faceW * 0.03);
-      ctx.beginPath();
-      ctx.ellipse(
-        g.center.x,
-        g.center.y,
-        g.faceW * 0.6,
-        g.faceH * 0.7,
-        g.angle,
-        0,
-        Math.PI * 2,
-      );
-      ctx.stroke();
-      ctx.restore();
-      return;
-    case "rainbow":
-      tintFace(ctx, g, "#a78bfa", 0.12);
-      browHat(ctx, g, "🌈", 0.7, 0.45);
-      sparklesAround(ctx, g, "✨", 6, timeMs);
-      return;
-    case "pixel":
-      pixelateFace(ctx, g, 14);
-      browHat(ctx, g, "👾", 0.35, 0.4);
-      return;
-    case "comic":
-      colorGrade(ctx, width, height, "contrast(1.4) saturate(1.6)");
-      comicDots(ctx, g);
-      browHat(ctx, g, "💥", 0.32, 0.5);
-      return;
-    case "cyber":
-      colorGrade(ctx, width, height, "contrast(1.15) saturate(1.3) hue-rotate(20deg)");
-      cyberHud(ctx, g);
-      return;
-    case "fire":
-      tintFace(ctx, g, "#ef4444", 0.16);
-      browHat(ctx, g, "🔥", 0.45, 0.42);
-      sparklesAround(ctx, g, "🔥", 7, timeMs);
-      return;
-    case "sparkle":
-      sparklesAround(ctx, g, "✨", 12, timeMs);
-      eyePair(ctx, g, "🌟", 0.2);
-      return;
-    default:
-      break;
-  }
-
-  // Sticker / character filters
-  switch (filter) {
-    case "cat":
-      earPair(ctx, g, "🐱", 0.4, 0.08);
-      noseBit(ctx, g, "👃", 0.16);
-      break;
     case "dog":
-      earPair(ctx, g, "🐶", 0.44, 0.05);
-      noseBit(ctx, g, "🐽", 0.2);
+      animalEars(ctx, f, "#c4a574", "#f5d0a9", { pointed: false, length: 0.4 });
+      snout(ctx, f, "#f5d0a9");
+      noseDot(ctx, f, "#1c1917", 0.055);
+      dogTongue(ctx, f);
+      if (f.smile > 0.4) orbit(ctx, f, "🦴", 4, timeMs, 0.7);
+      break;
+    case "cat":
+      animalEars(ctx, f, "#f59e0b", "#fb7185", { pointed: true, length: 0.52, flare: 1.15 });
+      whiskers(ctx, f);
+      noseDot(ctx, f, "#fb7185", 0.04);
+      mouthBurst(ctx, f, "🐟", timeMs);
       break;
     case "bunny":
-      earPair(ctx, g, "🐰", 0.5, 0.22, 0.05);
-      noseBit(ctx, g, "🌸", 0.14);
-      break;
-    case "mouse":
-      earPair(ctx, g, "🐭", 0.38, 0.05);
-      noseBit(ctx, g, "🩷", 0.12);
+      animalEars(ctx, f, "#f8fafc", "#fda4af", {
+        pointed: true,
+        length: 0.88,
+        spread: 0.02,
+        flare: 0.55,
+      });
+      whiskers(ctx, f, "rgba(100,100,100,0.55)");
+      noseDot(ctx, f, "#fb7185", 0.035);
+      if (f.jawOpen > 0.35) mouthBurst(ctx, f, "🥕", timeMs);
       break;
     case "bear":
-      earPair(ctx, g, "🐻", 0.42, 0.02);
+      animalEars(ctx, f, "#92400e", "#fdba74", { pointed: false, length: 0.34, flare: 0.9 });
+      noseDot(ctx, f, "#1c1917", 0.06);
+      if (f.jawOpen > 0.4) mouthBurst(ctx, f, "🍯", timeMs);
       break;
-    case "fox":
-      earPair(ctx, g, "🦊", 0.4, 0.1);
-      noseBit(ctx, g, "🖤", 0.12);
-      break;
-    case "panda":
-      earPair(ctx, g, "🐼", 0.4, 0.02);
-      eyePair(ctx, g, "⚫", 0.2);
-      break;
-    case "frog":
-      eyePair(ctx, g, "👀", 0.32);
-      tintFace(ctx, g, "#86efac", 0.2);
-      noseBit(ctx, g, "🟢", 0.14);
+    case "deer":
+      antlers(ctx, f);
+      animalEars(ctx, f, "#b45309", "#fecdd3", { pointed: true, length: 0.34 });
+      noseDot(ctx, f, "#1c1917", 0.04);
       break;
     case "pig":
-      earPair(ctx, g, "🐷", 0.36, 0.02);
-      noseBit(ctx, g, "🐽", 0.28);
+      animalEars(ctx, f, "#fda4af", "#fb7185", { pointed: false, length: 0.3 });
+      snout(ctx, f, "#fb7185");
+      if (f.jawOpen > 0.35) {
+        const m = midMouth(f);
+        emoji(ctx, "💨", m.x, m.y + f.faceH * 0.15, f.faceW * 0.25 * f.jawOpen, f.roll);
+      }
+      break;
+    case "mouse":
+      animalEars(ctx, f, "#d6d3d1", "#fecdd3", { pointed: false, length: 0.42 });
+      whiskers(ctx, f);
+      noseDot(ctx, f, "#f43f5e", 0.04);
+      break;
+    case "panda":
+      animalEars(ctx, f, "#18181b", "#fafafa", { pointed: false, length: 0.32 });
+      ctx.fillStyle = "rgba(24,24,27,0.85)";
+      for (const eye of [f.leftEye, f.rightEye]) {
+        ctx.beginPath();
+        ctx.ellipse(eye.x, eye.y, f.faceW * 0.12, f.faceH * 0.1, f.roll, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      noseDot(ctx, f, "#18181b", 0.045);
+      break;
+    case "fox":
+      animalEars(ctx, f, "#ea580c", "#fff7ed", { pointed: true, length: 0.55, flare: 1.2 });
+      whiskers(ctx, f);
+      noseDot(ctx, f, "#18181b", 0.04);
+      break;
+    case "raccoon":
+      animalEars(ctx, f, "#57534e", "#a8a29e", { pointed: false, length: 0.3 });
+      ctx.fillStyle = "rgba(28,25,23,0.75)";
+      for (const eye of [f.leftEye, f.rightEye]) {
+        ctx.beginPath();
+        ctx.ellipse(eye.x, eye.y, f.faceW * 0.14, f.faceH * 0.09, f.roll, 0, Math.PI * 2);
+        ctx.fill();
+      }
       break;
     case "chick":
-      browHat(ctx, g, "🐤", 0.55, 0.15);
+      headProp(ctx, f, "🐤", { size: 0.7, lift: -0.05 });
+      if (f.jawOpen > 0.3) mouthBurst(ctx, f, "🌽", timeMs);
       break;
-    case "koala":
-      earPair(ctx, g, "🐨", 0.45, 0.0);
-      break;
-    case "tiger":
-      earPair(ctx, g, "🐯", 0.4, 0.08);
-      tintFace(ctx, g, "#fb923c", 0.12);
-      break;
-    case "lion":
-      browHat(ctx, g, "🦁", 0.85, 0.05);
-      break;
-    case "cow":
-      earPair(ctx, g, "🐮", 0.38, 0.05);
-      browHat(ctx, g, "🖤", 0.2, 0.15);
+    case "frog":
+      tint(ctx, f, "#86efac", 0.22);
+      emoji(ctx, "👀", f.leftEye.x, f.leftEye.y - f.faceH * 0.06, f.faceW * 0.28, f.roll);
+      emoji(ctx, "👀", f.rightEye.x, f.rightEye.y - f.faceH * 0.06, f.faceW * 0.28, f.roll);
+      noseDot(ctx, f, "#166534", 0.035);
+      if (f.jawOpen > 0.35) dogTongue(ctx, f);
       break;
     case "unicorn":
-      browHat(ctx, g, "🦄", 0.55, 0.28);
-      sparklesAround(ctx, g, "✨", 8, timeMs);
-      break;
-    case "dragon":
-      earPair(ctx, g, "🐲", 0.42, 0.12);
-      browHat(ctx, g, "🔥", 0.28, 0.35);
-      break;
-    case "alien":
-      tintFace(ctx, g, "#4ade80", 0.22);
-      eyePair(ctx, g, "👁️", 0.34);
-      browHat(ctx, g, "👽", 0.4, 0.35);
-      break;
-    case "ghost":
-      tintFace(ctx, g, "#f8fafc", 0.35);
-      eyePair(ctx, g, "👀", 0.26);
-      browHat(ctx, g, "👻", 0.4, 0.4);
-      break;
-    case "robot":
-      tintFace(ctx, g, "#94a3b8", 0.28);
-      eyePair(ctx, g, "🟥", 0.22);
-      browHat(ctx, g, "🤖", 0.45, 0.25);
-      break;
-    case "devil":
-      earPair(ctx, g, "😈", 0.36, 0.18);
-      tintFace(ctx, g, "#ef4444", 0.12);
-      break;
-    case "angel":
-      browHat(ctx, g, "😇", 0.55, 0.35);
-      sparklesAround(ctx, g, "✨", 6, timeMs);
-      tintFace(ctx, g, "#fef9c3", 0.12);
-      break;
-    case "clown":
-      noseBit(ctx, g, "🔴", 0.28);
-      eyePair(ctx, g, "🔵", 0.18);
-      browHat(ctx, g, "🤡", 0.45, 0.3);
-      break;
-    case "vampire":
-      tintFace(ctx, g, "#64748b", 0.2);
-      sticker(ctx, "🦷", g.mouth.x, g.mouth.y, g.faceW * 0.28, g.angle);
-      browHat(ctx, g, "🧛", 0.4, 0.28);
-      break;
-    case "zombie":
-      tintFace(ctx, g, "#84cc16", 0.28);
-      eyePair(ctx, g, "🤢", 0.22);
-      browHat(ctx, g, "🧟", 0.4, 0.28);
-      break;
-    case "witch":
-      browHat(ctx, g, "🧙", 0.55, 0.3);
-      noseBit(ctx, g, "🧹", 0.14);
-      break;
-    case "pirate":
-      sticker(ctx, "🏴‍☠️", g.leftEye.x, g.leftEye.y, g.faceW * 0.32, g.angle);
-      browHat(ctx, g, "🦜", 0.32, 0.4);
-      break;
-    case "shades":
-      eyePair(ctx, g, "🕶️", 0.36);
-      break;
-    case "hearts":
-      eyePair(ctx, g, "❤️", 0.28);
-      sparklesAround(ctx, g, "💕", 6, timeMs);
-      break;
-    case "starry":
-      eyePair(ctx, g, "⭐", 0.28);
-      sparklesAround(ctx, g, "✨", 8, timeMs);
-      break;
-    case "mustache":
-      sticker(ctx, "🥸", g.nose.x, g.nose.y + g.faceH * 0.08, g.faceW * 0.45, g.angle);
-      break;
-    case "crown":
-      browHat(ctx, g, "👑", 0.55, 0.4);
+      headProp(ctx, f, "🦄", { size: 0.75, lift: 0.05 });
+      orbit(ctx, f, "✨", 6 + Math.floor(f.jawOpen * 6), timeMs);
+      if (f.jawOpen > 0.3) mouthBurst(ctx, f, "✨", timeMs);
       break;
     case "flower":
-      earPair(ctx, g, "🌸", 0.32, 0.15);
-      browHat(ctx, g, "🌼", 0.3, 0.35);
+      flowerCrown(ctx, f);
+      if (f.smile > 0.45) orbit(ctx, f, "🌸", 5, timeMs, 0.65);
       break;
-    case "party":
-      browHat(ctx, g, "🥳", 0.55, 0.28);
-      sparklesAround(ctx, g, "🎉", 7, timeMs);
+    case "hearts":
+      heart(ctx, f.leftEye.x, f.leftEye.y, f.faceW * 0.12, "#f43f5e");
+      heart(ctx, f.rightEye.x, f.rightEye.y, f.faceW * 0.12, "#f43f5e");
+      if (f.jawOpen > 0.25) mouthBurst(ctx, f, "💕", timeMs);
+      else if (f.smile > 0.35) orbit(ctx, f, "💕", 5, timeMs);
       break;
-    case "mask":
-      sticker(ctx, "🎭", g.eyeMid.x, g.eyeMid.y, g.faceW * 0.7, g.angle);
-      break;
-    case "glasses":
-      eyePair(ctx, g, "👓", 0.34);
-      break;
-    case "mono":
-      sticker(ctx, "🧐", g.rightEye.x, g.rightEye.y, g.faceW * 0.38, g.angle);
+    case "stars":
+      emoji(ctx, "⭐", f.leftEye.x, f.leftEye.y, f.faceW * 0.22, f.roll);
+      emoji(ctx, "⭐", f.rightEye.x, f.rightEye.y, f.faceW * 0.22, f.roll);
+      orbit(ctx, f, "✨", 5 + Math.floor(f.browUp * 5), timeMs);
       break;
     case "blush":
-      sticker(ctx, "🌸", g.leftTemple.x + g.faceW * 0.12, g.nose.y, g.faceW * 0.22, 0);
-      sticker(ctx, "🌸", g.rightTemple.x - g.faceW * 0.12, g.nose.y, g.faceW * 0.22, 0, true);
-      tintFace(ctx, g, "#fb7185", 0.1);
+      tint(ctx, f, "#fb7185", 0.08 + f.smile * 0.08);
+      ctx.globalAlpha = 0.4 + f.smile * 0.25;
+      ctx.fillStyle = "#fb7185";
+      for (const side of [-1, 1]) {
+        const p = offsetAlong(f.nose, f.right, side * f.faceW * 0.28);
+        ctx.beginPath();
+        ctx.ellipse(p.x, p.y, f.faceW * 0.1, f.faceH * 0.06, f.roll, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.globalAlpha = 1;
       break;
-    case "tears":
-      sticker(ctx, "💧", g.leftEye.x, g.leftEye.y + g.faceH * 0.18, g.faceW * 0.18, 0);
-      sticker(ctx, "💧", g.rightEye.x, g.rightEye.y + g.faceH * 0.18, g.faceW * 0.18, 0);
-      eyePair(ctx, g, "😭", 0.26);
+    case "freckles":
+      freckleDots(ctx, f);
+      break;
+    case "glow":
+      grade(ctx, width, height, "brightness(1.08) saturate(1.15) contrast(1.05)");
+      tint(ctx, f, "#fef9c3", 0.1 + f.smile * 0.08);
+      orbit(ctx, f, "✨", 6 + Math.floor(f.jawOpen * 5), timeMs);
+      break;
+    case "shades": {
+      const gw = f.faceW * 0.22;
+      const gh = f.faceH * 0.12;
+      ctx.save();
+      ctx.translate(f.eyeMid.x, f.eyeMid.y);
+      ctx.rotate(f.roll);
+      ctx.fillStyle = "rgba(15,23,42,0.9)";
+      ctx.strokeStyle = "#0f172a";
+      ctx.lineWidth = Math.max(2, f.faceW * 0.018);
+      for (const ox of [-f.faceW * 0.18, f.faceW * 0.18]) {
+        ctx.beginPath();
+        ctx.roundRect(ox - gw / 2, -gh / 2, gw, gh, gh * 0.35);
+        ctx.fill();
+        ctx.stroke();
+      }
+      ctx.beginPath();
+      ctx.moveTo(-f.faceW * 0.07, 0);
+      ctx.lineTo(f.faceW * 0.07, 0);
+      ctx.stroke();
+      ctx.restore();
+      break;
+    }
+    case "bigeyes": {
+      const scale = 0.28 + (1 - f.eyeBlink) * 0.08;
+      emoji(ctx, "👁️", f.leftEye.x, f.leftEye.y, f.faceW * scale, f.roll);
+      emoji(ctx, "👁️", f.rightEye.x, f.rightEye.y, f.faceW * scale, f.roll);
+      break;
+    }
+    case "mustache": {
+      ctx.save();
+      ctx.translate(f.nose.x, f.nose.y + f.faceH * 0.1);
+      ctx.rotate(f.roll);
+      ctx.fillStyle = "#292524";
+      ctx.beginPath();
+      ctx.ellipse(-f.faceW * 0.11, 0, f.faceW * 0.13, f.faceH * 0.045, -0.25, 0, Math.PI * 2);
+      ctx.ellipse(f.faceW * 0.11, 0, f.faceW * 0.13, f.faceH * 0.045, 0.25, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+      break;
+    }
+    case "crown":
+      drawnCrown(ctx, f);
+      break;
+    case "halo":
+      halo(ctx, f);
+      tint(ctx, f, "#fef9c3", 0.08);
+      break;
+    case "devil":
+      animalEars(ctx, f, "#7f1d1d", "#ef4444", {
+        pointed: true,
+        length: 0.48,
+        flare: 1.25,
+      });
+      tint(ctx, f, "#ef4444", 0.08 + f.jawOpen * 0.1);
+      if (f.jawOpen > 0.35) mouthBurst(ctx, f, "🔥", timeMs);
+      break;
+    case "ghost":
+      tint(ctx, f, "#f8fafc", 0.32 + f.jawOpen * 0.1);
+      for (const eye of [f.leftEye, f.rightEye]) {
+        ctx.fillStyle = "#0f172a";
+        ctx.beginPath();
+        ctx.ellipse(eye.x, eye.y, f.faceW * 0.07, f.faceH * 0.09, 0, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      if (f.jawOpen > 0.2) {
+        const m = midMouth(f);
+        ctx.fillStyle = "#0f172a";
+        ctx.beginPath();
+        ctx.ellipse(
+          m.x,
+          m.y,
+          f.faceW * (0.06 + f.jawOpen * 0.1),
+          f.faceH * (0.04 + f.jawOpen * 0.12),
+          f.roll,
+          0,
+          Math.PI * 2,
+        );
+        ctx.fill();
+      }
+      break;
+    case "sparkle":
+      orbit(ctx, f, "💖", 8 + Math.floor(f.jawOpen * 6), timeMs);
+      if (f.jawOpen > 0.25) mouthBurst(ctx, f, "✨", timeMs);
+      break;
+    case "rainbow":
+      headProp(ctx, f, "🌈", { size: 0.85, lift: 0.12 });
+      tint(ctx, f, "#a78bfa", 0.08);
+      if (f.jawOpen > 0.3) mouthBurst(ctx, f, "🌈", timeMs);
+      break;
+    case "snow":
+      grade(ctx, width, height, "saturate(0.75) brightness(1.06) hue-rotate(170deg)");
+      orbit(ctx, f, "❄️", 8 + Math.floor(Math.abs(f.yaw) * 4), timeMs);
+      break;
+    case "warm":
+      grade(ctx, width, height, "sepia(0.35) saturate(1.25) brightness(1.05)");
+      break;
+    case "cool":
+      grade(ctx, width, height, "saturate(0.85) hue-rotate(190deg) brightness(1.05)");
       break;
     default:
-      browHat(ctx, g, "✨", 0.35, 0.3);
+      break;
   }
 }
