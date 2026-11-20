@@ -2,7 +2,7 @@
 
 import { useEffect, useRef } from "react";
 import { MicOff, VideoOff } from "lucide-react";
-import { FILTERS, type FilterId } from "@/lib/filters";
+import { getFilter, type FilterId } from "@/lib/filters";
 import { cn } from "@/lib/utils";
 
 type VideoTileProps = {
@@ -27,7 +27,7 @@ export function VideoTile({
   className,
 }: VideoTileProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
-  const filterMeta = FILTERS.find((f) => f.id === filter);
+  const filterMeta = getFilter(filter);
 
   useEffect(() => {
     const el = videoRef.current;
@@ -39,7 +39,7 @@ export function VideoTile({
   return (
     <div
       className={cn(
-        "group relative overflow-hidden rounded-2xl bg-slate-900 ring-1 ring-white/10",
+        "relative h-full w-full min-h-0 min-w-0 overflow-hidden bg-zinc-950",
         className,
       )}
     >
@@ -50,28 +50,28 @@ export function VideoTile({
           playsInline
           muted={isLocal}
           className={cn(
-            "h-full w-full object-cover",
+            "absolute inset-0 size-full object-cover",
             mirrored && "scale-x-[-1]",
           )}
         />
       ) : (
-        <div className="flex h-full min-h-40 w-full items-center justify-center bg-gradient-to-br from-slate-800 to-slate-950">
-          <div className="flex size-16 items-center justify-center rounded-full bg-teal-500/20 text-2xl font-semibold text-teal-200">
+        <div className="absolute inset-0 flex size-full items-center justify-center bg-gradient-to-br from-slate-800 to-slate-950">
+          <div className="flex size-20 items-center justify-center rounded-full bg-teal-500/20 text-3xl font-semibold text-teal-200">
             {(name || "G").slice(0, 1).toUpperCase()}
           </div>
         </div>
       )}
 
-      <div className="pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/70 via-black/20 to-transparent p-3 pt-10">
-        <div className="flex items-center justify-between gap-2">
+      <div className="pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/75 via-black/25 to-transparent p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] pt-12">
+        <div className="flex items-end justify-between gap-2">
           <div className="min-w-0">
-            <p className="truncate text-sm font-medium text-white">
+            <p className="truncate text-sm font-medium text-white drop-shadow">
               {name}
               {isLocal ? " (you)" : ""}
             </p>
             {filter !== "none" && (
-              <p className="truncate text-xs text-teal-200/90">
-                {filterMeta?.emoji} {filterMeta?.label}
+              <p className="truncate text-xs text-teal-200/95">
+                {filterMeta.emoji} {filterMeta.label}
               </p>
             )}
           </div>

@@ -20,11 +20,11 @@ export function RoomClient({ roomId, initialName }: RoomClientProps) {
   const [status, setStatus] = useState("Starting camera…");
   const [error, setError] = useState<string | null>(null);
   const [peers, setPeers] = useState<PeerUser[]>([]);
+  const [localPreview, setLocalPreview] = useState<MediaStream | null>(null);
   const [filter, setFilter] = useState<FilterId>("none");
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [audioEnabled, setAudioEnabled] = useState(true);
   const [videoEnabled, setVideoEnabled] = useState(true);
-  const [ready, setReady] = useState(false);
 
   const hiddenVideoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -37,13 +37,28 @@ export function RoomClient({ roomId, initialName }: RoomClientProps) {
     [initialName],
   );
 
+  const tiles = useMemo(() => {
+    if (peers.length > 0) return peers;
+    return [
+      {
+        peerId: "local-preview",
+        name: displayName,
+        filter,
+        stream: localPreview ?? undefined,
+        isLocal: true,
+      } satisfies PeerUser,
+    ];
+  }, [peers, displayName, filter, localPreview]);
+
+  const count = tiles.length;
+
   const gridClass = useMemo(() => {
-    const count = Math.max(peers.length, 1);
-    if (count === 1) return "grid-cols-1 max-w-3xl mx-auto";
-    if (count === 2) return "grid-cols-1 md:grid-cols-2";
-    if (count <= 4) return "grid-cols-1 sm:grid-cols-2";
-    return "grid-cols-1 sm:grid-cols-2 xl:grid-cols-3";
-  }, [peers.length]);
+    if (count <= 1) return "grid-cols-1 grid-rows-1";
+    if (count === 2)
+      return "grid-cols-1 grid-rows-2 md:grid-cols-2 md:grid-rows-1";
+    if (count <= 4) return "grid-cols-2 grid-rows-2";
+    return "grid-cols-2 grid-rows-3 md:grid-cols-3 md:grid-rows-2";
+  }, [count]);
 
   const cleanup = useCallback(() => {
     roomRef.current?.leave();
@@ -52,6 +67,7 @@ export function RoomClient({ roomId, initialName }: RoomClientProps) {
     pipelineRef.current = null;
     rawStreamRef.current?.getTracks().forEach((t) => t.stop());
     rawStreamRef.current = null;
+    setLocalPreview(null);
   }, []);
 
   useEffect(() => {
@@ -77,7 +93,7 @@ export function RoomClient({ roomId, initialName }: RoomClientProps) {
         const canvas = canvasRef.current;
         if (!video || !canvas) throw new Error("Media elements missing");
 
-        setStatus("Loading face filters…");
+        setStatus("Loading filters…");
         const pipeline = new FaceFilterPipeline(video, canvas);
         await pipeline.init();
         if (cancelled) {
@@ -87,8 +103,9 @@ export function RoomClient({ roomId, initialName }: RoomClientProps) {
         pipelineRef.current = pipeline;
         pipeline.setFilter("none");
         const outgoing = pipeline.start(raw);
+        setLocalPreview(outgoing);
 
-        setStatus("Connecting to room…");
+        setStatus("Connecting…");
         const room = new PeerRoom(roomId, displayName, {
           onPeers: (list) => setPeers(list),
           onStatus: (s) => setStatus(s),
@@ -96,7 +113,6 @@ export function RoomClient({ roomId, initialName }: RoomClientProps) {
         });
         roomRef.current = room;
         await room.join(outgoing, "none");
-        if (!cancelled) setReady(true);
       } catch (err) {
         console.error(err);
         if (!cancelled) {
@@ -153,55 +169,61 @@ export function RoomClient({ roomId, initialName }: RoomClientProps) {
   }
 
   return (
-    <div className="relative flex min-h-dvh flex-col bg-[#0f1419] text-white">
-      <header className="flex items-center justify-between gap-3 px-4 py-3 sm:px-6">
-        <div>
-          <p className="text-sm font-semibold tracking-tight">
+    <div className="fixed inset-0 h-dvh w-screen overflow-hidden bg-black text-white">
+      <header className="pointer-events-none absolute inset-x-0 top-0 z-20 flex items-start justify-between gap-3 bg-gradient-to-b from-black/70 to-transparent px-3 pb-10 pt-[max(0.75rem,env(safe-area-inset-top))] sm:px-4">
+        <div className="pointer-events-auto min-w-0">
+          <p className="truncate text-sm font-semibold tracking-tight drop-shadow">
             FunCall{" "}
-            <span className="font-normal text-slate-400">/ {roomId}</span>
+            <span className="font-normal text-white/70">/ {roomId}</span>
           </p>
-          <p className="text-xs text-slate-400">{status}</p>
+          <p className="truncate text-xs text-white/60">{status}</p>
         </div>
-        <div className="rounded-full bg-white/5 px-3 py-1 text-xs text-slate-300 ring-1 ring-white/10">
-          {peers.length} in call
+        <div className="pointer-events-auto shrink-0 rounded-full bg-black/40 px-2.5 py-1 text-xs text-white/80 ring-1 ring-white/15 backdrop-blur">
+          {Math.max(peers.length, localPreview ? 1 : 0)}
         </div>
       </header>
 
       {error && (
-        <div className="mx-4 mb-3 rounded-xl border border-red-400/30 bg-red-500/10 px-4 py-3 text-sm text-red-100 sm:mx-6">
+        <div className="absolute inset-x-3 top-16 z-30 rounded-xl border border-red-400/30 bg-red-950/90 px-3 py-2 text-sm text-red-100 backdrop-blur">
           {error}
         </div>
       )}
 
-      <main className="relative flex flex-1 flex-col px-3 pb-28 sm:px-5">
-        <div className={cn("grid flex-1 gap-3", gridClass)}>
-          {peers.map((peer) => (
-            <VideoTile
-              key={peer.peerId}
-              stream={peer.stream}
-              name={peer.name}
-              filter={peer.filter}
-              isLocal={peer.isLocal}
-              mirrored={Boolean(peer.isLocal)}
-              audioEnabled={peer.isLocal ? audioEnabled : true}
-              videoEnabled={peer.isLocal ? videoEnabled : true}
-              className="min-h-[220px] sm:min-h-[280px]"
-            />
-          ))}
-          {!ready && peers.length === 0 && (
-            <div className="flex min-h-[280px] items-center justify-center rounded-2xl bg-slate-900/80 ring-1 ring-white/10">
-              <p className="text-sm text-slate-400">{status}</p>
-            </div>
-          )}
+      <div
+        className={cn(
+          "absolute inset-0 grid h-full w-full min-h-0 min-w-0 gap-px bg-black",
+          gridClass,
+        )}
+      >
+        {tiles.map((peer, index) => (
+          <VideoTile
+            key={peer.peerId}
+            stream={peer.stream}
+            name={peer.name}
+            filter={peer.isLocal ? filter : peer.filter}
+            isLocal={peer.isLocal}
+            mirrored={Boolean(peer.isLocal)}
+            audioEnabled={peer.isLocal ? audioEnabled : true}
+            videoEnabled={peer.isLocal ? videoEnabled : true}
+            className={cn(
+              "min-h-0 min-w-0",
+              count === 3 && index === 0 && "col-span-2 md:col-span-1",
+            )}
+          />
+        ))}
+      </div>
+
+      {!localPreview && !error && (
+        <div className="absolute inset-0 z-10 flex items-center justify-center bg-black/80">
+          <p className="text-sm text-slate-300">{status}</p>
         </div>
-      </main>
+      )}
 
       <FilterPicker
         open={filtersOpen}
         value={filter}
-        onChange={(id) => {
-          applyFilter(id);
-        }}
+        onChange={applyFilter}
+        onClose={() => setFiltersOpen(false)}
       />
 
       <ControlBar
@@ -209,13 +231,13 @@ export function RoomClient({ roomId, initialName }: RoomClientProps) {
         audioEnabled={audioEnabled}
         videoEnabled={videoEnabled}
         filtersOpen={filtersOpen}
+        hidden={filtersOpen}
         onToggleAudio={toggleAudio}
         onToggleVideo={toggleVideo}
         onToggleFilters={() => setFiltersOpen((v) => !v)}
         onLeave={leave}
       />
 
-      {/* Hidden capture targets for the filter pipeline */}
       <video ref={hiddenVideoRef} className="hidden" playsInline muted />
       <canvas ref={canvasRef} className="hidden" />
     </div>

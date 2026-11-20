@@ -1,6 +1,6 @@
 # FunCall
 
-Meet-style video rooms with live face filters (cat, dog, mouse, bunny, ghost, and more). Filters are baked into your outgoing video, so everyone in the room sees them.
+Meet-style video rooms with 40+ live face filters (animals, creatures, accessories, mood, and FX). Filters are baked into your outgoing video, so everyone in the room sees them. Mobile-first, full-bleed video.
 
 ## Stack
 

@@ -23,6 +23,7 @@ type ControlBarProps = {
   onToggleFilters: () => void;
   onLeave: () => void;
   roomId: string;
+  hidden?: boolean;
 };
 
 export function ControlBar({
@@ -34,6 +35,7 @@ export function ControlBar({
   onToggleFilters,
   onLeave,
   roomId,
+  hidden,
 }: ControlBarProps) {
   const [copied, setCopied] = useState(false);
 
@@ -44,14 +46,16 @@ export function ControlBar({
     setTimeout(() => setCopied(false), 1600);
   }
 
+  if (hidden) return null;
+
   return (
-    <div className="pointer-events-none absolute inset-x-0 bottom-0 z-20 flex justify-center p-4 pb-6">
-      <div className="pointer-events-auto flex items-center gap-2 rounded-full border border-white/10 bg-slate-950/85 px-3 py-2 shadow-2xl backdrop-blur-xl">
+    <div className="pointer-events-none absolute inset-x-0 bottom-0 z-20 flex justify-center px-3 pb-[max(1rem,env(safe-area-inset-bottom))] pt-4">
+      <div className="pointer-events-auto flex items-center gap-2 rounded-full border border-white/10 bg-black/70 px-2.5 py-2 shadow-2xl backdrop-blur-md">
         <Button
           size="icon-lg"
           variant="secondary"
           className={cn(
-            "rounded-full",
+            "size-12 rounded-full bg-white/10 text-white hover:bg-white/20",
             !audioEnabled && "bg-red-500 text-white hover:bg-red-500/90",
           )}
           onClick={onToggleAudio}
@@ -64,7 +68,7 @@ export function ControlBar({
           size="icon-lg"
           variant="secondary"
           className={cn(
-            "rounded-full",
+            "size-12 rounded-full bg-white/10 text-white hover:bg-white/20",
             !videoEnabled && "bg-red-500 text-white hover:bg-red-500/90",
           )}
           onClick={onToggleVideo}
@@ -77,7 +81,7 @@ export function ControlBar({
           size="icon-lg"
           variant="secondary"
           className={cn(
-            "rounded-full",
+            "size-12 rounded-full bg-white/10 text-white hover:bg-white/20",
             filtersOpen && "bg-teal-400 text-slate-950 hover:bg-teal-300",
           )}
           onClick={onToggleFilters}
@@ -89,7 +93,7 @@ export function ControlBar({
         <Button
           size="icon-lg"
           variant="secondary"
-          className="rounded-full"
+          className="size-12 rounded-full bg-white/10 text-white hover:bg-white/20"
           onClick={copyLink}
           aria-label="Copy room link"
         >
@@ -98,7 +102,7 @@ export function ControlBar({
 
         <Button
           size="icon-lg"
-          className="rounded-full bg-red-500 text-white hover:bg-red-400"
+          className="size-12 rounded-full bg-red-500 text-white hover:bg-red-400"
           onClick={onLeave}
           aria-label="Leave call"
         >
