@@ -16,6 +16,12 @@ type RoomClientProps = {
   initialName: string;
 };
 
+function hasLiveVideo(stream?: MediaStream) {
+  return Boolean(
+    stream?.getVideoTracks().some((t) => t.readyState === "live"),
+  );
+}
+
 export function RoomClient({ roomId, initialName }: RoomClientProps) {
   const router = useRouter();
   const [status, setStatus] = useState("Starting camera…");
@@ -40,27 +46,45 @@ export function RoomClient({ roomId, initialName }: RoomClientProps) {
     [initialName],
   );
 
-  const localPeer = useMemo(
-    () => peers.find((p) => p.isLocal),
+  const localStream =
+    peers.find((p) => p.isLocal)?.stream ?? localPreview ?? undefined;
+
+  // Only remotes that actually have video — avoids empty black tiles
+  const activeRemotes = useMemo(
+    () =>
+      peers.filter(
+        (p) => !p.isLocal && p.peerId && hasLiveVideo(p.stream),
+      ),
     [peers],
   );
 
-  const remotePeers = useMemo(
-    () => peers.filter((p) => !p.isLocal),
-    [peers],
-  );
+  const remoteCount = activeRemotes.length;
+  /** 1 = alone, 2 = 1:1 Messenger PiP, 3+ = shared grid including you */
+  const participantCount = remoteCount + (localStream ? 1 : 0);
+  const isOneOnOne = remoteCount === 1;
+  const isGroup = remoteCount >= 2;
 
-  const localStream = localPeer?.stream ?? localPreview ?? undefined;
-  const hasRemotes = remotePeers.length > 0;
+  const groupTiles = useMemo(() => {
+    if (!isGroup) return [];
+    const localTile: PeerUser = {
+      peerId: "local",
+      name: displayName,
+      filter,
+      stream: localStream,
+      isLocal: true,
+    };
+    return [localTile, ...activeRemotes];
+  }, [isGroup, displayName, filter, localStream, activeRemotes]);
 
-  const remoteGrid = useMemo(() => {
-    const n = remotePeers.length;
+  const groupGridClass = useMemo(() => {
+    const n = groupTiles.length;
     if (n <= 1) return "grid-cols-1 grid-rows-1";
-    if (n === 2)
-      return "grid-cols-1 grid-rows-2 md:grid-cols-2 md:grid-rows-1";
-    if (n <= 4) return "grid-cols-2 grid-rows-2";
-    return "grid-cols-2 grid-rows-3 md:grid-cols-3";
-  }, [remotePeers.length]);
+    if (n === 2) return "grid-cols-1 grid-rows-2 sm:grid-cols-2 sm:grid-rows-1";
+    if (n === 3)
+      return "grid-cols-2 grid-rows-2 [&>*:first-child]:col-span-2";
+    if (n === 4) return "grid-cols-2 grid-rows-2";
+    return "grid-cols-2 grid-rows-3 md:grid-cols-3 md:auto-rows-fr";
+  }, [groupTiles.length]);
 
   const cleanup = useCallback(() => {
     roomRef.current?.leave();
@@ -211,7 +235,7 @@ export function RoomClient({ roomId, initialName }: RoomClientProps) {
           <p className="truncate text-xs text-white/60">{status}</p>
         </div>
         <div className="pointer-events-auto shrink-0 rounded-full bg-black/40 px-2.5 py-1 text-xs text-white/80 ring-1 ring-white/15 backdrop-blur">
-          {Math.max(peers.length, localPreview ? 1 : 0)}
+          {Math.max(participantCount, localPreview ? 1 : 0)}
         </div>
       </header>
 
@@ -221,21 +245,9 @@ export function RoomClient({ roomId, initialName }: RoomClientProps) {
         </div>
       )}
 
-      {/* Main stage: remotes full-bleed, or local full-screen when alone */}
       <div className="absolute inset-0">
-        {hasRemotes ? (
-          <div className={cn("grid h-full w-full gap-px bg-black", remoteGrid)}>
-            {remotePeers.map((peer) => (
-              <VideoTile
-                key={peer.peerId}
-                stream={peer.stream}
-                name={peer.name}
-                filter={peer.filter}
-                className="min-h-0 min-w-0"
-              />
-            ))}
-          </div>
-        ) : (
+        {/* Alone: your camera full screen */}
+        {remoteCount === 0 && (
           <VideoTile
             stream={localStream}
             name={displayName}
@@ -245,18 +257,52 @@ export function RoomClient({ roomId, initialName }: RoomClientProps) {
             audioEnabled={audioEnabled}
             videoEnabled={videoEnabled}
             className="h-full w-full"
+            fit="cover"
           />
+        )}
+
+        {/* 1:1 Messenger: other person full screen */}
+        {isOneOnOne && activeRemotes[0] && (
+          <VideoTile
+            key={activeRemotes[0].peerId}
+            stream={activeRemotes[0].stream}
+            name={activeRemotes[0].name}
+            filter={activeRemotes[0].filter}
+            className="h-full w-full"
+            fit="cover"
+          />
+        )}
+
+        {/* 3+: equal responsive grid, includes you — no empty black cell */}
+        {isGroup && (
+          <div className={cn("grid h-full w-full gap-0.5 bg-black", groupGridClass)}>
+            {groupTiles.map((peer) => (
+              <VideoTile
+                key={peer.peerId}
+                stream={peer.stream}
+                name={peer.name}
+                filter={peer.isLocal ? filter : peer.filter}
+                isLocal={peer.isLocal}
+                mirrored={Boolean(peer.isLocal)}
+                audioEnabled={peer.isLocal ? audioEnabled : true}
+                videoEnabled={peer.isLocal ? videoEnabled : true}
+                className="min-h-0 min-w-0"
+                fit="cover"
+              />
+            ))}
+          </div>
         )}
       </div>
 
-      {/* Messenger-style floating self view when others are in the call */}
-      {hasRemotes && (
+      {/* PiP only for 1:1 — top right like Messenger */}
+      {isOneOnOne && (
         <DraggablePip
           stream={localStream}
           name={displayName}
           filter={filter}
           audioEnabled={audioEnabled}
           videoEnabled={videoEnabled}
+          defaultCorner="tr"
         />
       )}
 

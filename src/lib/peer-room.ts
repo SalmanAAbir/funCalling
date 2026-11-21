@@ -12,7 +12,10 @@ export type PeerUser = {
 
 type SignalMessage =
   | { type: "hello"; name: string; filter: FilterId }
-  | { type: "roster"; peers: { peerId: string; name: string; filter: FilterId }[] }
+  | {
+      type: "roster";
+      peers: { peerId: string; name: string; filter: FilterId }[];
+    }
   | { type: "peer-joined"; peerId: string; name: string; filter: FilterId }
   | { type: "peer-left"; peerId: string }
   | { type: "name"; name: string }
@@ -26,6 +29,11 @@ export type RoomEvents = {
 
 function hostPeerId(roomId: string) {
   return `funcall-${roomId}`;
+}
+
+function streamIsLive(stream?: MediaStream) {
+  if (!stream) return false;
+  return stream.getTracks().some((t) => t.readyState === "live");
 }
 
 export class PeerRoom {
@@ -42,11 +50,7 @@ export class PeerRoom {
   private localPeerId = "";
   private destroyed = false;
 
-  constructor(
-    roomId: string,
-    displayName: string,
-    events: RoomEvents,
-  ) {
+  constructor(roomId: string, displayName: string, events: RoomEvents) {
     this.roomId = roomId;
     this.displayName = displayName || "Guest";
     this.events = events;
@@ -61,10 +65,7 @@ export class PeerRoom {
 
     this.events.onStatus("Connecting…");
 
-    // Try to become host first
-    const hostPeer = new PeerCtor(hostId, {
-      debug: 0,
-    });
+    const hostPeer = new PeerCtor(hostId, { debug: 0 });
 
     const hostReady = await new Promise<"host" | "taken" | "error">((resolve) => {
       const timer = setTimeout(() => resolve("error"), 8000);
@@ -104,7 +105,6 @@ export class PeerRoom {
       return;
     }
 
-    // Join as guest
     const guest = new PeerCtor({ debug: 0 });
     this.peer = guest;
 
@@ -177,8 +177,20 @@ export class PeerRoom {
 
   leave() {
     this.destroyed = true;
-    for (const call of this.mediaCalls.values()) call.close();
-    for (const data of this.dataChannels.values()) data.close();
+    for (const call of this.mediaCalls.values()) {
+      try {
+        call.close();
+      } catch {
+        /* ignore */
+      }
+    }
+    for (const data of this.dataChannels.values()) {
+      try {
+        data.close();
+      } catch {
+        /* ignore */
+      }
+    }
     this.mediaCalls.clear();
     this.dataChannels.clear();
     this.peers.clear();
@@ -211,6 +223,15 @@ export class PeerRoom {
   }
 
   private wireData(conn: DataConnection) {
+    // Replace stale channel to the same peer
+    const prev = this.dataChannels.get(conn.peer);
+    if (prev && prev !== conn) {
+      try {
+        prev.close();
+      } catch {
+        /* ignore */
+      }
+    }
     this.dataChannels.set(conn.peer, conn);
 
     conn.on("data", (raw) => {
@@ -219,22 +240,25 @@ export class PeerRoom {
     });
 
     conn.on("close", () => {
-      this.removePeer(conn.peer);
+      if (this.dataChannels.get(conn.peer) === conn) {
+        this.removePeer(conn.peer);
+      }
     });
 
-    conn.on("open", () => {
-      if (this.isHost) {
-        // Wait for hello from guest
-      }
+    conn.on("error", () => {
+      this.removePeer(conn.peer);
     });
   }
 
   private handleSignal(fromPeerId: string, msg: SignalMessage) {
     if (msg.type === "hello") {
+      const existing = this.peers.get(fromPeerId);
       this.peers.set(fromPeerId, {
         peerId: fromPeerId,
         name: msg.name,
         filter: msg.filter,
+        stream: existing?.stream,
+        isLocal: false,
       });
 
       if (this.isHost) {
@@ -268,10 +292,14 @@ export class PeerRoom {
 
     if (msg.type === "roster") {
       for (const remote of msg.peers) {
+        if (remote.peerId === this.localPeerId) continue;
+        const existing = this.peers.get(remote.peerId);
         this.peers.set(remote.peerId, {
           peerId: remote.peerId,
           name: remote.name,
           filter: remote.filter,
+          stream: existing?.stream,
+          isLocal: false,
         });
         this.ensureData(remote.peerId);
         this.callPeer(remote.peerId);
@@ -282,10 +310,14 @@ export class PeerRoom {
     }
 
     if (msg.type === "peer-joined") {
+      if (msg.peerId === this.localPeerId) return;
+      const existing = this.peers.get(msg.peerId);
       this.peers.set(msg.peerId, {
         peerId: msg.peerId,
         name: msg.name,
         filter: msg.filter,
+        stream: existing?.stream,
+        isLocal: false,
       });
       this.ensureData(msg.peerId);
       this.callPeer(msg.peerId);
@@ -319,8 +351,8 @@ export class PeerRoom {
   }
 
   private ensureData(peerId: string) {
-    if (this.dataChannels.has(peerId) || !this.peer) return;
-    if (peerId === this.localPeerId) return;
+    if (!this.peer || peerId === this.localPeerId) return;
+    if (this.dataChannels.has(peerId)) return;
     const conn = this.peer.connect(peerId, { reliable: true });
     this.wireData(conn);
     conn.on("open", () => {
@@ -336,7 +368,6 @@ export class PeerRoom {
     if (!this.peer || !this.localStream) return;
     if (peerId === this.localPeerId) return;
     if (this.mediaCalls.has(peerId)) return;
-    // Only one side dials to avoid glare / double-call races
     if (this.localPeerId > peerId) return;
 
     const call = this.peer.call(peerId, this.localStream);
@@ -344,6 +375,14 @@ export class PeerRoom {
   }
 
   private attachMedia(call: MediaConnection) {
+    const prev = this.mediaCalls.get(call.peer);
+    if (prev && prev !== call) {
+      try {
+        prev.close();
+      } catch {
+        /* ignore */
+      }
+    }
     this.mediaCalls.set(call.peer, call);
 
     call.on("stream", (remoteStream) => {
@@ -353,7 +392,18 @@ export class PeerRoom {
         filter: "none" as FilterId,
       };
       existing.stream = remoteStream;
+      existing.isLocal = false;
       this.peers.set(call.peer, existing);
+
+      // If remote tracks end (they left / refreshed), drop them
+      for (const track of remoteStream.getTracks()) {
+        track.addEventListener("ended", () => {
+          if (!streamIsLive(remoteStream)) {
+            this.removePeer(call.peer);
+          }
+        });
+      }
+
       this.emitPeers();
     });
 
@@ -367,21 +417,47 @@ export class PeerRoom {
   }
 
   private removePeer(peerId: string) {
-    this.mediaCalls.get(peerId)?.close();
-    this.mediaCalls.delete(peerId);
-    this.dataChannels.get(peerId)?.close();
-    this.dataChannels.delete(peerId);
-    if (this.peers.delete(peerId)) {
-      if (this.isHost) {
-        this.broadcast({ type: "peer-left", peerId });
+    if (!peerId || peerId === this.localPeerId) return;
+
+    const call = this.mediaCalls.get(peerId);
+    if (call) {
+      try {
+        call.close();
+      } catch {
+        /* ignore */
       }
-      this.emitPeers();
+      this.mediaCalls.delete(peerId);
     }
+
+    const data = this.dataChannels.get(peerId);
+    if (data) {
+      try {
+        data.close();
+      } catch {
+        /* ignore */
+      }
+      this.dataChannels.delete(peerId);
+    }
+
+    const had = this.peers.delete(peerId);
+    // Always keep local entry healthy
+    this.upsertLocal();
+
+    if (had && this.isHost) {
+      this.broadcast({ type: "peer-left", peerId });
+    }
+
+    const remotes = [...this.peers.values()].filter((p) => !p.isLocal);
+    this.events.onStatus(
+      remotes.length === 0 ? "Waiting for others…" : "In call",
+    );
+    this.emitPeers();
   }
 
   private upsertLocal() {
-    this.peers.set(this.localPeerId || "local", {
-      peerId: this.localPeerId || "local",
+    if (!this.localPeerId) return;
+    this.peers.set(this.localPeerId, {
+      peerId: this.localPeerId,
       name: this.displayName,
       filter: this.filter,
       stream: this.localStream ?? undefined,
@@ -402,6 +478,14 @@ export class PeerRoom {
   }
 
   private emitPeers() {
+    // Drop any accidental self duplicates marked remote
+    for (const [id, p] of this.peers) {
+      if (id === this.localPeerId) {
+        p.isLocal = true;
+        p.stream = this.localStream ?? p.stream;
+      }
+    }
+
     const list = [...this.peers.values()].sort((a, b) => {
       if (a.isLocal) return -1;
       if (b.isLocal) return 1;

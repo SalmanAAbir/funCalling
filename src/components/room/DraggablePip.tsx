@@ -13,12 +13,12 @@ type DraggablePipProps = {
   filter: FilterId;
   audioEnabled: boolean;
   videoEnabled: boolean;
+  defaultCorner?: Corner;
 };
 
 const PAD = 12;
-/** Landscape PiP matching typical webcam 16:9 */
-const PIP_W = 168;
-const PIP_H = 94;
+const PIP_W = 120;
+const PIP_H = 160;
 
 function cornerPos(
   corner: Corner,
@@ -27,9 +27,9 @@ function cornerPos(
 ): { x: number; y: number } {
   switch (corner) {
     case "tl":
-      return { x: PAD, y: PAD + 48 };
+      return { x: PAD, y: PAD + 52 };
     case "tr":
-      return { x: vw - PIP_W - PAD, y: PAD + 48 };
+      return { x: vw - PIP_W - PAD, y: PAD + 52 };
     case "bl":
       return { x: PAD, y: vh - PIP_H - PAD - 88 };
     case "br":
@@ -42,7 +42,7 @@ function nearestCorner(x: number, y: number, vw: number, vh: number): Corner {
   const cx = x + PIP_W / 2;
   const cy = y + PIP_H / 2;
   const corners: Corner[] = ["tl", "tr", "bl", "br"];
-  let best: Corner = "br";
+  let best: Corner = "tr";
   let bestDist = Infinity;
   for (const c of corners) {
     const p = cornerPos(c, vw, vh);
@@ -61,6 +61,7 @@ export function DraggablePip({
   filter,
   audioEnabled,
   videoEnabled,
+  defaultCorner = "tr",
 }: DraggablePipProps) {
   const [pos, setPos] = useState({ x: 0, y: 0 });
   const [ready, setReady] = useState(false);
@@ -70,11 +71,9 @@ export function DraggablePip({
   posRef.current = pos;
 
   const placeDefault = useCallback(() => {
-    const vw = window.innerWidth;
-    const vh = window.innerHeight;
-    setPos(cornerPos("br", vw, vh));
+    setPos(cornerPos(defaultCorner, window.innerWidth, window.innerHeight));
     setReady(true);
-  }, []);
+  }, [defaultCorner]);
 
   useEffect(() => {
     placeDefault();
@@ -114,7 +113,12 @@ export function DraggablePip({
   function onPointerUp() {
     if (!dragging.current) return;
     dragging.current = false;
-    const corner = nearestCorner(pos.x, pos.y, window.innerWidth, window.innerHeight);
+    const corner = nearestCorner(
+      pos.x,
+      pos.y,
+      window.innerWidth,
+      window.innerHeight,
+    );
     setPos(cornerPos(corner, window.innerWidth, window.innerHeight));
   }
 
@@ -123,7 +127,7 @@ export function DraggablePip({
   return (
     <div
       className={cn(
-        "absolute z-40 touch-none select-none overflow-hidden rounded-2xl shadow-2xl ring-2 ring-white/30",
+        "absolute z-40 touch-none select-none overflow-hidden rounded-2xl shadow-2xl ring-2 ring-white/35",
         "cursor-grab active:cursor-grabbing",
       )}
       style={{
