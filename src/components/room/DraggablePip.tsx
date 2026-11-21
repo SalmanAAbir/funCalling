@@ -11,9 +11,12 @@ type DraggablePipProps = {
   stream?: MediaStream;
   name: string;
   filter: FilterId;
-  audioEnabled: boolean;
-  videoEnabled: boolean;
+  audioEnabled?: boolean;
+  videoEnabled?: boolean;
+  isLocal?: boolean;
+  mirrored?: boolean;
   defaultCorner?: Corner;
+  onSwap?: () => void;
 };
 
 const PAD = 12;
@@ -59,15 +62,20 @@ export function DraggablePip({
   stream,
   name,
   filter,
-  audioEnabled,
-  videoEnabled,
+  audioEnabled = true,
+  videoEnabled = true,
+  isLocal = true,
+  mirrored = true,
   defaultCorner = "tr",
+  onSwap,
 }: DraggablePipProps) {
   const [pos, setPos] = useState({ x: 0, y: 0 });
   const [ready, setReady] = useState(false);
   const dragging = useRef(false);
+  const moved = useRef(false);
   const offset = useRef({ x: 0, y: 0 });
   const posRef = useRef(pos);
+  const lastTap = useRef(0);
   posRef.current = pos;
 
   const placeDefault = useCallback(() => {
@@ -98,6 +106,7 @@ export function DraggablePip({
 
   function onPointerDown(e: React.PointerEvent) {
     dragging.current = true;
+    moved.current = false;
     (e.target as HTMLElement).setPointerCapture?.(e.pointerId);
     offset.current = {
       x: e.clientX - pos.x,
@@ -107,7 +116,9 @@ export function DraggablePip({
 
   function onPointerMove(e: React.PointerEvent) {
     if (!dragging.current) return;
-    setPos(clamp(e.clientX - offset.current.x, e.clientY - offset.current.y));
+    const next = clamp(e.clientX - offset.current.x, e.clientY - offset.current.y);
+    if (Math.hypot(next.x - pos.x, next.y - pos.y) > 4) moved.current = true;
+    setPos(next);
   }
 
   function onPointerUp() {
@@ -120,6 +131,25 @@ export function DraggablePip({
       window.innerHeight,
     );
     setPos(cornerPos(corner, window.innerWidth, window.innerHeight));
+  }
+
+  function onDoubleClick(e: React.MouseEvent) {
+    e.preventDefault();
+    e.stopPropagation();
+    onSwap?.();
+  }
+
+  /** Mobile double-tap */
+  function onClick(e: React.MouseEvent) {
+    if (moved.current) return;
+    const now = Date.now();
+    if (now - lastTap.current < 320) {
+      e.preventDefault();
+      onSwap?.();
+      lastTap.current = 0;
+    } else {
+      lastTap.current = now;
+    }
   }
 
   if (!ready) return null;
@@ -140,16 +170,19 @@ export function DraggablePip({
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
       onPointerCancel={onPointerUp}
+      onDoubleClick={onDoubleClick}
+      onClick={onClick}
+      title="Double-click to switch"
     >
       <VideoTile
         stream={stream}
         name={name}
         filter={filter}
-        isLocal
-        mirrored
+        isLocal={isLocal}
+        mirrored={mirrored}
         audioEnabled={audioEnabled}
         videoEnabled={videoEnabled}
-        className="h-full w-full rounded-2xl"
+        className="h-full w-full rounded-2xl pointer-events-none"
         compact
       />
     </div>

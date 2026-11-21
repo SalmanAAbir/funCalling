@@ -8,7 +8,7 @@ import { FILTERS, type FilterId } from "@/lib/filters";
 import { VideoTile } from "./VideoTile";
 import { DraggablePip } from "./DraggablePip";
 import { ControlBar } from "./ControlBar";
-import { FilterPicker } from "./FilterPicker";
+import { FilterPicker, type FilterScope } from "./FilterPicker";
 import { cn } from "@/lib/utils";
 
 type RoomClientProps = {
@@ -29,9 +29,11 @@ export function RoomClient({ roomId, initialName }: RoomClientProps) {
   const [peers, setPeers] = useState<PeerUser[]>([]);
   const [localPreview, setLocalPreview] = useState<MediaStream | null>(null);
   const [filter, setFilter] = useState<FilterId>("none");
+  const [filterScope, setFilterScope] = useState<FilterScope>("self");
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [audioEnabled, setAudioEnabled] = useState(true);
   const [videoEnabled, setVideoEnabled] = useState(true);
+  const [swapped, setSwapped] = useState(false);
 
   const hiddenVideoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -39,7 +41,9 @@ export function RoomClient({ roomId, initialName }: RoomClientProps) {
   const roomRef = useRef<PeerRoom | null>(null);
   const rawStreamRef = useRef<MediaStream | null>(null);
   const filterRef = useRef<FilterId>(filter);
+  const scopeRef = useRef<FilterScope>(filterScope);
   filterRef.current = filter;
+  scopeRef.current = filterScope;
 
   const displayName = useMemo(
     () => initialName.trim() || "Guest",
@@ -49,20 +53,22 @@ export function RoomClient({ roomId, initialName }: RoomClientProps) {
   const localStream =
     peers.find((p) => p.isLocal)?.stream ?? localPreview ?? undefined;
 
-  // Only remotes that actually have video — avoids empty black tiles
   const activeRemotes = useMemo(
     () =>
-      peers.filter(
-        (p) => !p.isLocal && p.peerId && hasLiveVideo(p.stream),
-      ),
+      peers.filter((p) => !p.isLocal && p.peerId && hasLiveVideo(p.stream)),
     [peers],
   );
 
   const remoteCount = activeRemotes.length;
-  /** 1 = alone, 2 = 1:1 Messenger PiP, 3+ = shared grid including you */
   const participantCount = remoteCount + (localStream ? 1 : 0);
   const isOneOnOne = remoteCount === 1;
   const isGroup = remoteCount >= 2;
+  const isAlone = remoteCount === 0;
+
+  // When back to alone / group, clear 1:1 swap
+  useEffect(() => {
+    if (!isOneOnOne && swapped) setSwapped(false);
+  }, [isOneOnOne, swapped]);
 
   const groupTiles = useMemo(() => {
     if (!isGroup) return [];
@@ -80,11 +86,16 @@ export function RoomClient({ roomId, initialName }: RoomClientProps) {
     const n = groupTiles.length;
     if (n <= 1) return "grid-cols-1 grid-rows-1";
     if (n === 2) return "grid-cols-1 grid-rows-2 sm:grid-cols-2 sm:grid-rows-1";
-    if (n === 3)
-      return "grid-cols-2 grid-rows-2 [&>*:first-child]:col-span-2";
+    if (n === 3) return "grid-cols-2 grid-rows-2 [&>*:first-child]:col-span-2";
     if (n === 4) return "grid-cols-2 grid-rows-2";
     return "grid-cols-2 grid-rows-3 md:grid-cols-3 md:auto-rows-fr";
   }, [groupTiles.length]);
+
+  const applyLocalFilter = useCallback((next: FilterId) => {
+    setFilter(next);
+    pipelineRef.current?.setFilter(next);
+    roomRef.current?.setFilter(next);
+  }, []);
 
   const cleanup = useCallback(() => {
     roomRef.current?.leave();
@@ -94,6 +105,8 @@ export function RoomClient({ roomId, initialName }: RoomClientProps) {
     rawStreamRef.current?.getTracks().forEach((t) => t.stop());
     rawStreamRef.current = null;
     setLocalPreview(null);
+    setPeers([]);
+    setSwapped(false);
   }, []);
 
   useEffect(() => {
@@ -140,6 +153,10 @@ export function RoomClient({ roomId, initialName }: RoomClientProps) {
           onPeers: (list) => setPeers(list),
           onStatus: (s) => setStatus(s),
           onError: (message) => setError(message),
+          onForceFilter: (forced) => {
+            // Someone chose "For everyone" — apply on our camera
+            applyLocalFilter(forced);
+          },
         });
         roomRef.current = room;
         await room.join(outgoing, "none");
@@ -161,13 +178,18 @@ export function RoomClient({ roomId, initialName }: RoomClientProps) {
       cancelled = true;
       cleanup();
     };
-  }, [cleanup, displayName, roomId]);
+  }, [applyLocalFilter, cleanup, displayName, roomId]);
 
-  const applyFilter = useCallback((next: FilterId) => {
-    setFilter(next);
-    pipelineRef.current?.setFilter(next);
-    roomRef.current?.setFilter(next);
-  }, []);
+  const selectFilter = useCallback(
+    (next: FilterId) => {
+      applyLocalFilter(next);
+      if (scopeRef.current === "everyone") {
+        roomRef.current?.forceFilterEveryone(next);
+      }
+      setFiltersOpen(true);
+    },
+    [applyLocalFilter],
+  );
 
   const shiftFilter = useCallback(
     (delta: number) => {
@@ -175,10 +197,9 @@ export function RoomClient({ roomId, initialName }: RoomClientProps) {
       const current = index < 0 ? 0 : index;
       const next =
         FILTERS[(current + delta + FILTERS.length) % FILTERS.length];
-      applyFilter(next.id);
-      setFiltersOpen(true);
+      selectFilter(next.id);
     },
-    [applyFilter],
+    [selectFilter],
   );
 
   useEffect(() => {
@@ -224,6 +245,8 @@ export function RoomClient({ roomId, initialName }: RoomClientProps) {
     router.push("/");
   }
 
+  const remote = activeRemotes[0];
+
   return (
     <div className="fixed inset-0 h-dvh w-screen overflow-hidden bg-black text-white">
       <header className="pointer-events-none absolute inset-x-0 top-0 z-20 flex items-start justify-between gap-3 bg-gradient-to-b from-black/70 to-transparent px-3 pb-10 pt-[max(0.75rem,env(safe-area-inset-top))] sm:px-4">
@@ -246,8 +269,8 @@ export function RoomClient({ roomId, initialName }: RoomClientProps) {
       )}
 
       <div className="absolute inset-0">
-        {/* Alone: your camera full screen */}
-        {remoteCount === 0 && (
+        {/* Alone → your camera fullscreen (Messenger) */}
+        {isAlone && (
           <VideoTile
             stream={localStream}
             name={displayName}
@@ -260,20 +283,25 @@ export function RoomClient({ roomId, initialName }: RoomClientProps) {
           />
         )}
 
-        {/* 1:1 Messenger: other person full screen */}
-        {isOneOnOne && activeRemotes[0] && (
+        {/* 1:1 — swap toggles who is large */}
+        {isOneOnOne && remote && (
           <VideoTile
-            key={activeRemotes[0].peerId}
-            stream={activeRemotes[0].stream}
-            name={activeRemotes[0].name}
-            filter={activeRemotes[0].filter}
+            key={swapped ? "local-main" : remote.peerId}
+            stream={swapped ? localStream : remote.stream}
+            name={swapped ? displayName : remote.name}
+            filter={swapped ? filter : remote.filter}
+            isLocal={swapped}
+            mirrored={swapped}
+            audioEnabled={swapped ? audioEnabled : true}
+            videoEnabled={swapped ? videoEnabled : true}
             className="h-full w-full"
           />
         )}
 
-        {/* 3+: equal responsive grid, includes you — no empty black cell */}
         {isGroup && (
-          <div className={cn("grid h-full w-full gap-0.5 bg-black", groupGridClass)}>
+          <div
+            className={cn("grid h-full w-full gap-0.5 bg-black", groupGridClass)}
+          >
             {groupTiles.map((peer) => (
               <VideoTile
                 key={peer.peerId}
@@ -291,15 +319,18 @@ export function RoomClient({ roomId, initialName }: RoomClientProps) {
         )}
       </div>
 
-      {/* PiP only for 1:1 — top right like Messenger */}
-      {isOneOnOne && (
+      {/* PiP — double-click / double-tap to switch */}
+      {isOneOnOne && remote && (
         <DraggablePip
-          stream={localStream}
-          name={displayName}
-          filter={filter}
-          audioEnabled={audioEnabled}
-          videoEnabled={videoEnabled}
+          stream={swapped ? remote.stream : localStream}
+          name={swapped ? remote.name : displayName}
+          filter={swapped ? remote.filter : filter}
+          isLocal={!swapped}
+          mirrored={!swapped}
+          audioEnabled={swapped ? true : audioEnabled}
+          videoEnabled={swapped ? true : videoEnabled}
           defaultCorner="tr"
+          onSwap={() => setSwapped((v) => !v)}
         />
       )}
 
@@ -312,7 +343,9 @@ export function RoomClient({ roomId, initialName }: RoomClientProps) {
       <FilterPicker
         open={filtersOpen}
         value={filter}
-        onChange={applyFilter}
+        onChange={selectFilter}
+        scope={filterScope}
+        onScopeChange={setFilterScope}
       />
 
       <ControlBar

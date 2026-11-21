@@ -19,12 +19,17 @@ type SignalMessage =
   | { type: "peer-joined"; peerId: string; name: string; filter: FilterId }
   | { type: "peer-left"; peerId: string }
   | { type: "name"; name: string }
-  | { type: "filter"; filter: FilterId };
+  | { type: "filter"; filter: FilterId }
+  | { type: "force-filter"; filter: FilterId }
+  | { type: "ping"; t: number }
+  | { type: "pong"; t: number };
 
 export type RoomEvents = {
   onPeers: (peers: PeerUser[]) => void;
   onStatus: (status: string) => void;
   onError: (message: string) => void;
+  /** Remote asked everyone to wear this filter */
+  onForceFilter: (filter: FilterId) => void;
 };
 
 function hostPeerId(roomId: string) {
@@ -49,6 +54,9 @@ export class PeerRoom {
   private events: RoomEvents;
   private localPeerId = "";
   private destroyed = false;
+  private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+  private lastPong = new Map<string, number>();
+  private pcUnsubscribers = new Map<string, () => void>();
 
   constructor(roomId: string, displayName: string, events: RoomEvents) {
     this.roomId = roomId;
@@ -95,6 +103,7 @@ export class PeerRoom {
       this.localPeerId = hostId;
       this.setupPeerHandlers();
       this.upsertLocal();
+      this.startHeartbeat();
       this.events.onStatus("Waiting for others…");
       this.emitPeers();
       return;
@@ -125,6 +134,7 @@ export class PeerRoom {
 
     this.setupPeerHandlers();
     this.upsertLocal();
+    this.startHeartbeat();
     this.events.onStatus("Joining room…");
 
     const data = guest.connect(hostId, { reliable: true });
@@ -168,6 +178,7 @@ export class PeerRoom {
     this.emitPeers();
   }
 
+  /** Own filter change (label + metadata for remotes) */
   setFilter(filter: FilterId) {
     this.filter = filter;
     this.upsertLocal();
@@ -175,8 +186,24 @@ export class PeerRoom {
     this.emitPeers();
   }
 
+  /** Ask every other peer to apply this filter on themselves */
+  forceFilterEveryone(filter: FilterId) {
+    this.broadcast({ type: "force-filter", filter });
+  }
+
   leave() {
     this.destroyed = true;
+    this.stopHeartbeat();
+    if (typeof window !== "undefined") {
+      window.removeEventListener("pagehide", this.onPageHide);
+      window.removeEventListener("beforeunload", this.onPageHide);
+    }
+    // Best-effort notify before teardown
+    this.broadcast({ type: "peer-left", peerId: this.localPeerId });
+
+    for (const unsub of this.pcUnsubscribers.values()) unsub();
+    this.pcUnsubscribers.clear();
+
     for (const call of this.mediaCalls.values()) {
       try {
         call.close();
@@ -194,8 +221,47 @@ export class PeerRoom {
     this.mediaCalls.clear();
     this.dataChannels.clear();
     this.peers.clear();
+    this.lastPong.clear();
     this.peer?.destroy();
     this.peer = null;
+  }
+
+  private startHeartbeat() {
+    this.stopHeartbeat();
+    this.heartbeatTimer = setInterval(() => {
+      if (this.destroyed) return;
+      const now = Date.now();
+      this.broadcast({ type: "ping", t: now });
+
+      // Drop peers that went silent (browser closed without clean hangup)
+      for (const peerId of [...this.peers.keys()]) {
+        if (peerId === this.localPeerId) continue;
+        const last = this.lastPong.get(peerId) ?? 0;
+        const call = this.mediaCalls.get(peerId);
+        const pc = call?.peerConnection;
+        const pcDead =
+          pc &&
+          (pc.connectionState === "failed" ||
+            pc.connectionState === "closed" ||
+            pc.iceConnectionState === "failed" ||
+            pc.iceConnectionState === "closed");
+
+        const peer = this.peers.get(peerId);
+        const streamDead = peer?.stream ? !streamIsLive(peer.stream) : false;
+
+        // Heartbeat miss (browser closed) or media/PC dead
+        if (pcDead || streamDead || (last > 0 && now - last > 7000)) {
+          this.removePeer(peerId);
+        }
+      }
+    }, 2000);
+  }
+
+  private stopHeartbeat() {
+    if (this.heartbeatTimer) {
+      clearInterval(this.heartbeatTimer);
+      this.heartbeatTimer = null;
+    }
   }
 
   private setupPeerHandlers() {
@@ -212,7 +278,14 @@ export class PeerRoom {
     });
 
     this.peer.on("disconnected", () => {
-      if (!this.destroyed) this.events.onStatus("Reconnecting…");
+      if (!this.destroyed) {
+        this.events.onStatus("Reconnecting…");
+        try {
+          this.peer?.reconnect();
+        } catch {
+          /* ignore */
+        }
+      }
     });
 
     this.peer.on("error", (err) => {
@@ -220,10 +293,25 @@ export class PeerRoom {
         this.events.onError(err.message || "Peer error");
       }
     });
+
+    // Tab/browser close
+    if (typeof window !== "undefined") {
+      window.addEventListener("pagehide", this.onPageHide);
+      window.addEventListener("beforeunload", this.onPageHide);
+    }
   }
 
+  private onPageHide = () => {
+    if (this.destroyed) return;
+    this.broadcast({ type: "peer-left", peerId: this.localPeerId });
+    try {
+      this.peer?.disconnect();
+    } catch {
+      /* ignore */
+    }
+  };
+
   private wireData(conn: DataConnection) {
-    // Replace stale channel to the same peer
     const prev = this.dataChannels.get(conn.peer);
     if (prev && prev !== conn) {
       try {
@@ -233,6 +321,7 @@ export class PeerRoom {
       }
     }
     this.dataChannels.set(conn.peer, conn);
+    this.lastPong.set(conn.peer, Date.now());
 
     conn.on("data", (raw) => {
       const msg = raw as SignalMessage;
@@ -251,6 +340,22 @@ export class PeerRoom {
   }
 
   private handleSignal(fromPeerId: string, msg: SignalMessage) {
+    if (msg.type === "ping") {
+      const conn = this.dataChannels.get(fromPeerId);
+      if (conn) this.send(conn, { type: "pong", t: msg.t });
+      return;
+    }
+
+    if (msg.type === "pong") {
+      this.lastPong.set(fromPeerId, Date.now());
+      return;
+    }
+
+    if (msg.type === "force-filter" && isFilterId(msg.filter)) {
+      this.events.onForceFilter(msg.filter);
+      return;
+    }
+
     if (msg.type === "hello") {
       const existing = this.peers.get(fromPeerId);
       this.peers.set(fromPeerId, {
@@ -260,6 +365,7 @@ export class PeerRoom {
         stream: existing?.stream,
         isLocal: false,
       });
+      this.lastPong.set(fromPeerId, Date.now());
 
       if (this.isHost) {
         const roster = [...this.peers.values()]
@@ -326,7 +432,11 @@ export class PeerRoom {
     }
 
     if (msg.type === "peer-left") {
-      this.removePeer(msg.peerId);
+      const target =
+        msg.peerId && msg.peerId !== this.localPeerId
+          ? msg.peerId
+          : fromPeerId;
+      this.removePeer(target);
       return;
     }
 
@@ -374,6 +484,29 @@ export class PeerRoom {
     this.attachMedia(call);
   }
 
+  private watchPeerConnection(peerId: string, call: MediaConnection) {
+    this.pcUnsubscribers.get(peerId)?.();
+    const pc = call.peerConnection;
+    if (!pc) return;
+
+    const onState = () => {
+      const dead =
+        pc.connectionState === "failed" ||
+        pc.connectionState === "closed" ||
+        pc.iceConnectionState === "failed" ||
+        pc.iceConnectionState === "closed";
+      // "disconnected" alone can be brief — heartbeat handles silent leave
+      if (dead) this.removePeer(peerId);
+    };
+
+    pc.addEventListener("connectionstatechange", onState);
+    pc.addEventListener("iceconnectionstatechange", onState);
+    this.pcUnsubscribers.set(peerId, () => {
+      pc.removeEventListener("connectionstatechange", onState);
+      pc.removeEventListener("iceconnectionstatechange", onState);
+    });
+  }
+
   private attachMedia(call: MediaConnection) {
     const prev = this.mediaCalls.get(call.peer);
     if (prev && prev !== call) {
@@ -384,6 +517,7 @@ export class PeerRoom {
       }
     }
     this.mediaCalls.set(call.peer, call);
+    this.watchPeerConnection(call.peer, call);
 
     call.on("stream", (remoteStream) => {
       const existing = this.peers.get(call.peer) ?? {
@@ -394,8 +528,8 @@ export class PeerRoom {
       existing.stream = remoteStream;
       existing.isLocal = false;
       this.peers.set(call.peer, existing);
+      this.lastPong.set(call.peer, Date.now());
 
-      // If remote tracks end (they left / refreshed), drop them
       for (const track of remoteStream.getTracks()) {
         track.addEventListener("ended", () => {
           if (!streamIsLive(remoteStream)) {
@@ -419,6 +553,10 @@ export class PeerRoom {
   private removePeer(peerId: string) {
     if (!peerId || peerId === this.localPeerId) return;
 
+    this.pcUnsubscribers.get(peerId)?.();
+    this.pcUnsubscribers.delete(peerId);
+    this.lastPong.delete(peerId);
+
     const call = this.mediaCalls.get(peerId);
     if (call) {
       try {
@@ -440,7 +578,6 @@ export class PeerRoom {
     }
 
     const had = this.peers.delete(peerId);
-    // Always keep local entry healthy
     this.upsertLocal();
 
     if (had && this.isHost) {
@@ -466,8 +603,12 @@ export class PeerRoom {
   }
 
   private send(conn: DataConnection, msg: SignalMessage) {
-    if (conn.open) conn.send(msg);
-    else conn.on("open", () => conn.send(msg));
+    try {
+      if (conn.open) conn.send(msg);
+      else conn.on("open", () => conn.send(msg));
+    } catch {
+      /* ignore */
+    }
   }
 
   private broadcast(msg: SignalMessage, except?: string) {
@@ -478,7 +619,6 @@ export class PeerRoom {
   }
 
   private emitPeers() {
-    // Drop any accidental self duplicates marked remote
     for (const [id, p] of this.peers) {
       if (id === this.localPeerId) {
         p.isLocal = true;
