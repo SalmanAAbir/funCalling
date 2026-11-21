@@ -257,7 +257,6 @@ export function RoomClient({ roomId, initialName }: RoomClientProps) {
             audioEnabled={audioEnabled}
             videoEnabled={videoEnabled}
             className="h-full w-full"
-            fit="cover"
           />
         )}
 
@@ -269,7 +268,6 @@ export function RoomClient({ roomId, initialName }: RoomClientProps) {
             name={activeRemotes[0].name}
             filter={activeRemotes[0].filter}
             className="h-full w-full"
-            fit="cover"
           />
         )}
 
@@ -287,7 +285,6 @@ export function RoomClient({ roomId, initialName }: RoomClientProps) {
                 audioEnabled={peer.isLocal ? audioEnabled : true}
                 videoEnabled={peer.isLocal ? videoEnabled : true}
                 className="min-h-0 min-w-0"
-                fit="cover"
               />
             ))}
           </div>

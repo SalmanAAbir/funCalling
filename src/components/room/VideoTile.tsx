@@ -15,8 +15,6 @@ type VideoTileProps = {
   videoEnabled?: boolean;
   className?: string;
   compact?: boolean;
-  /** cover = fill & crop; contain = keep camera ratio (letterbox) */
-  fit?: "cover" | "contain";
 };
 
 export function VideoTile({
@@ -29,7 +27,6 @@ export function VideoTile({
   videoEnabled = true,
   className,
   compact = false,
-  fit = "contain",
 }: VideoTileProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const filterMeta = getFilter(filter);
@@ -55,8 +52,7 @@ export function VideoTile({
           playsInline
           muted={isLocal}
           className={cn(
-            "absolute inset-0 size-full",
-            fit === "contain" ? "object-contain" : "object-cover",
+            "absolute inset-0 size-full object-contain",
             mirrored && "scale-x-[-1]",
           )}
         />

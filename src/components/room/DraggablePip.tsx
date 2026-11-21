@@ -151,7 +151,6 @@ export function DraggablePip({
         videoEnabled={videoEnabled}
         className="h-full w-full rounded-2xl"
         compact
-        fit="cover"
       />
     </div>
   );
